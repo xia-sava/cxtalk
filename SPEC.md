@@ -52,6 +52,8 @@ BE                     cxtalk                     FE
 
 メッセージのファイル名に送信者を含めるため、万一連番が競合しても上書き事故にはならない。
 
+状態の置き場は環境変数 `CXTALK_HOME` で変えられる。未設定なら `~/cxtalk` とする。
+
 ## 状態モデル
 
 ```json
@@ -442,11 +444,23 @@ Windows の Node 24 では、型注釈を除去した `.ts` が `fs` の同期 A
 `check` の出力を hook に渡す際のノイズになるため、shebang で
 `--disable-warning=ExperimentalWarning` を渡して抑止する。
 
+`package.json` は `{"type": "module"}` のみを持つ。これがないと import を含む `.ts` の
+実行時に MODULE_TYPELESS_PACKAGE_JSON の警告が stderr に出力され、同じくノイズになる。
+依存は持たないため `node_modules` は生じない。
+
 ### 呼び出しの前提
 
 `bin/` に置いたものはプラグインが有効な間 Bash ツールの `PATH` に加わるため、
 `cxtalk` の名前で呼べる。ただし**実行許可を settings に登録する**必要がある。
 登録がないと往復のたびに許可を求められ、自走が成立しない。
+
+### テスト
+
+`node --test` で実行する。`node:test` と `node:assert` のみを使い、追加の依存を持たない。
+
+コマンドを子プロセスとして起動し、標準出力の JSON と終了コードを検証する。
+出力の形が仕様であるため、内部の関数ではなく外から見た振る舞いを対象にする。
+`CXTALK_HOME` に一時ディレクトリを渡し、実データから隔離する。
 
 ## skill との分担
 

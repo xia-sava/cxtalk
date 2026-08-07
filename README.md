@@ -21,19 +21,21 @@ backend repo と frontend repo でそれぞれセッションを動かしてい�
 
 ## 状態
 
-仕様のみ。実装は未着手。
+仕様とテストは完成。`src/cxtalk.ts` は未実装。
 
 ## 構成
 
 Claude Code のプラグインとして構成している。
 
 ```
-.claude-plugin/plugin.json   プラグインの定義（未着手）
-bin/cxtalk                   PATH に載るコマンド（未着手）
+.claude-plugin/plugin.json   プラグインの定義
+bin/cxtalk                   PATH に載るコマンド
 src/cxtalk.ts                実装（未着手）
 skills/cxtalk/SKILL.md       作法（未着手）
-hooks/hooks.json             Stop hook の登録（未着手）
-hooks/stop.sh                Stop hook の本体（未着手）
+hooks/hooks.json             Stop hook の登録
+hooks/stop.sh                Stop hook の本体
+test/cxtalk.test.ts          テスト
+package.json                 モジュール種別の宣言
 SPEC.md                      仕様
 ```
 
@@ -69,3 +71,14 @@ settings に `cxtalk` の実行許可を登録する。
 ```
 /skills/cxtalk/
 ```
+
+## 開発
+
+テストは Node の組み込みのテストランナーで動かす。追加の依存はない。
+
+```
+node --test
+```
+
+テストはコマンドを子プロセスとして起動し、標準出力の JSON と終了コードを検証する。
+`CXTALK_HOME` に一時ディレクトリを渡すため、実際の会話データには触れない。
