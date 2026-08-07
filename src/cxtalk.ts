@@ -31,6 +31,7 @@ const RETRY_LIMIT = 6;
 const IDLE_MINUTES = 30;
 const POLL_INTERVAL_MS = 200;
 const MAX_PARTICIPANTS = 2;
+const NAME_MAX_LENGTH = 64;
 
 const CLOSED_REASONS: readonly string[] = [
   "hop_limit",
@@ -96,6 +97,18 @@ const readRoom = (id: string): Room | null => {
   const path = roomJsonPath(id);
   if (!existsSync(path)) return null;
   return JSON.parse(readFileSync(path, "utf8")) as Room;
+};
+
+/**
+ * 読めないルームを飛ばして読む。一覧と検知は他のルームの結果を返す必要があり、
+ * 1 件の破損で全件が失われると、未読があること自体が伝わらなくなる。
+ */
+const safeReadRoom = (id: string): Room | null => {
+  try {
+    return readRoom(id);
+  } catch {
+    return null;
+  }
 };
 
 const writeRoom = (room: Room): void => {
@@ -180,20 +193,27 @@ const invalidArgument = (hint: string, id?: string): void => {
  * 参加者名はメッセージのファイル名に埋まり、先手の判定にも使われる。
  * 数字だけの名前は状態を読み書きすると並び順が変わるため受けない。
  */
+const isControl = (ch: string): boolean => {
+  const code = ch.codePointAt(0) ?? 0;
+  return code < 0x20 || (code >= 0x7f && code <= 0x9f);
+};
+
 const isValidName = (name: string): boolean =>
   name.length > 0 &&
-  name.length <= 64 &&
+  name.length <= NAME_MAX_LENGTH &&
   !/^\d+$/.test(name) &&
   !/^\.{1,2}$/.test(name) &&
   !/[\\/:*?"<>|]/.test(name) &&
-  ![...name].some((ch) => (ch.codePointAt(0) ?? 0) < 0x20);
+  ![...name].some(isControl);
 
 /** 名前が使えなければ理由を返して true。呼び出し側はそこで中断する。 */
 const rejectInvalidName = (name: string): boolean => {
   if (isValidName(name)) return false;
+  const shown = name.length > 32 ? `${name.slice(0, 32)}…` : name;
   invalidArgument(
-    `参加者名 "${name}" は使えません。数字だけの名前と、` +
-      `ファイル名に使えない文字を含む名前は受け付けません。--as で別の名前を指定してください。`,
+    `参加者名 "${shown}" は使えません。1 文字以上 ${NAME_MAX_LENGTH} 文字以内で、` +
+      `数字だけの名前、. と ..、ファイル名に使えない文字、制御文字を避けてください。` +
+      `--as で別の名前を指定してください。`,
   );
   return true;
 };
@@ -229,16 +249,48 @@ const notFound = (id: string): void => {
   });
 };
 
-const notAParticipant = (id: string, as: string): void => {
+const notAParticipant = (id: string, as: string, participants: string[]): void => {
+  const full = participants.length >= MAX_PARTICIPANTS;
   emit({
     ok: false,
     error: "not_a_participant",
     room_id: id,
+    participants,
     next: "ask_user",
     hint:
       `${as} はこのルームに参加していません。会話の読み書きは参加者に限られます。` +
-      `先に join してください。`,
+      `参加しているのは ${participants.join(" と ")} です。` +
+      (full
+        ? `このどちらかとして続けるつもりなら --as にその名前を指定してください。` +
+          `2 人が埋まっているため、別の名前では join できません。`
+        : `名乗り分けをしているなら --as にその名前を指定し、` +
+          `まだ入っていないなら join してください。`),
   });
+};
+
+const corruptRoom = (id: string): void => {
+  emit({
+    ok: false,
+    error: "corrupt_room",
+    room_id: id,
+    log_path: logPath(id),
+    next: "ask_user",
+    hint:
+      `ルーム ${id} の状態を読み取れません。room.json が壊れています。` +
+      `${logPath(id)} をユーザーに確認してもらってください。`,
+  });
+};
+
+/** ルームを読む。読めなければ理由に応じた応答を返して null を返す。 */
+const loadRoom = (id: string): Room | null => {
+  try {
+    const room = readRoom(id);
+    if (!room) notFound(id);
+    return room;
+  } catch {
+    corruptRoom(id);
+    return null;
+  }
 };
 
 const CLOSING_HINT =
@@ -252,7 +304,11 @@ const reportHint = (id: string, head: string): string =>
 const cmdOpen = (flags: Flags): void => {
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
-  const topic = flags.topic ?? "";
+  const topic = flags.topic;
+  if (topic === undefined) {
+    invalidArgument("--topic は必須です。この会話で詰める論点を一つ渡してください。");
+    return;
+  }
   const maxHops = positiveInt(flags["max-hops"], DEFAULT_MAX_HOPS);
   if (maxHops === null) {
     invalidArgument("--max-hops には 1 以上の整数を指定してください。");
@@ -285,9 +341,17 @@ const cmdOpen = (flags: Flags): void => {
   });
 };
 
-const joinHint = (id: string, closed: boolean, unread: number, rejoined: boolean, next: Next): string => {
+const joinHint = (
+  id: string,
+  closed: boolean,
+  unread: number,
+  rejoined: boolean,
+  next: Next,
+  alone: boolean,
+): string => {
   if (closed) return reportHint(id, "このルームは閉じています。");
   const head = `未読 ${unread} 件。${rejoined ? "再入場です。" : "参加しました。"}`;
+  if (alone) return `${head}相手はまだ参加していません。receive を呼べば参加を待てます。`;
   return next === "say"
     ? `${head}あなたの番です。say で発言してください。`
     : `${head}相手の発言を receive で待ってください。`;
@@ -297,11 +361,8 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
-  const room = readRoom(id);
-  if (!room) {
-    notFound(id);
-    return;
-  }
+  const room = loadRoom(id);
+  if (!room) return;
   sweepIdle(room);
   const rejoined = as in room.participants;
   if (!rejoined && Object.keys(room.participants).length >= MAX_PARTICIPANTS) {
@@ -313,7 +374,9 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
       next: "ask_user",
       hint:
         `このルームには既に ${Object.keys(room.participants).join(" と ")} が参加しています。` +
-        `3 人以上の会話には対応していません。別のルームを開いてください。`,
+        `3 人以上の会話には対応していません。` +
+        `このどちらかとして続けるつもりなら --as にその名前を指定してください。` +
+        `別の論点であれば新しいルームを開いてください。`,
     });
     return;
   }
@@ -325,7 +388,9 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   writeRoom(room);
   const closed = room.status === "closed";
   const turn = turnOf(room, seq);
-  const next: Next = closed ? "report" : turn === as ? "say" : "receive";
+  // 相手がいないルームでは say が断られる。次の行動として示さない。
+  const alone = Object.keys(room.participants).length < MAX_PARTICIPANTS;
+  const next: Next = closed ? "report" : !alone && turn === as ? "say" : "receive";
   emit({
     ok: true,
     room_id: id,
@@ -338,7 +403,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     turn,
     log_path: logPath(id),
     next,
-    hint: joinHint(id, closed, messages.length, rejoined, next),
+    hint: joinHint(id, closed, messages.length, rejoined, next, alone),
   });
 };
 
@@ -346,12 +411,15 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
-  const room = readRoom(id);
-  if (!room) {
-    notFound(id);
+  const room = loadRoom(id);
+  if (!room) return;
+  sweepIdle(room);
+  // 参加者かどうかを先に見る。閉じたルームを先に見ると、
+  // 参加していない相手に会話の要約と原文の場所を渡すことになる。
+  if (!(as in room.participants)) {
+    notAParticipant(id, as, Object.keys(room.participants));
     return;
   }
-  sweepIdle(room);
   if (room.status === "closed") {
     emit({
       ok: false,
@@ -363,10 +431,6 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       next: "report",
       hint: reportHint(id, "このルームは閉じています。"),
     });
-    return;
-  }
-  if (!(as in room.participants)) {
-    notAParticipant(id, as);
     return;
   }
   if (Object.keys(room.participants).length < MAX_PARTICIPANTS) {
@@ -466,7 +530,7 @@ const sleep = (ms: number): Promise<void> =>
 
 /** 応答を返せる状態なら出力を返す。まだ待つべきなら null。 */
 const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
-  const room = readRoom(id);
+  const room = safeReadRoom(id);
   if (!room) return null;
   sweepIdle(room);
   const seq = latestSeq(id);
@@ -497,10 +561,18 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
 
   const seen = participant?.last_read ?? 0;
   if (seq > seen) {
-    const messages = readMessages(id, seen);
-    if (participant) participant.last_read = seq;
+    // 発言を書いてから状態を書くまでの間に落ちると、自分の発言が未読として残る。
+    // そのまま返すと、自分が書いたものを相手の発言として読ませることになる。
+    const messages = readMessages(id, seen).filter((message) => message.from !== as);
+    if (participant) {
+      participant.last_read = seq;
+      // 相手の応答が届いた時点で待ち直しになる。時間切れは往復のたびに起きるため、
+      // 数え続けると応答している相手との会話が打ち切られる。
+      if (messages.length > 0) participant.timeouts = 0;
+    }
     room.last_activity_at = nowIso();
     writeRoom(room);
+    if (messages.length === 0) return null;
     return {
       ok: true,
       status: "message",
@@ -545,13 +617,10 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     return;
   }
   const id = positional[0] ?? "";
-  const opening = readRoom(id);
-  if (!opening) {
-    notFound(id);
-    return;
-  }
+  const opening = loadRoom(id);
+  if (!opening) return;
   if (!(as in opening.participants)) {
-    notAParticipant(id, as);
+    notAParticipant(id, as, Object.keys(opening.participants));
     return;
   }
   const timeout = positiveInt(flags.timeout, DEFAULT_TIMEOUT_SECONDS);
@@ -571,17 +640,19 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     await sleep(POLL_INTERVAL_MS);
   }
 
-  const room = readRoom(id);
-  const participant = room?.participants[as];
-  if (!room || !participant) {
-    notFound(id);
+  const room = loadRoom(id);
+  if (!room) return;
+  const participant = room.participants[as];
+  if (!participant) {
+    notAParticipant(id, as, Object.keys(room.participants));
     return;
   }
 
   // 参加を待っている間の時間切れは、会話中の長考とは別に数える。
+  // 該当のフィールドを持たない状態ファイルもあるため、0 から数え直せる形で足す。
   const awaitingJoin = Object.keys(room.participants).length < MAX_PARTICIPANTS;
-  if (awaitingJoin) participant.join_timeouts += 1;
-  else participant.timeouts += 1;
+  if (awaitingJoin) participant.join_timeouts = (participant.join_timeouts ?? 0) + 1;
+  else participant.timeouts = (participant.timeouts ?? 0) + 1;
   writeRoom(room);
   const retriesLeft = RETRY_LIMIT - (awaitingJoin ? participant.join_timeouts : participant.timeouts);
 
@@ -631,16 +702,15 @@ const unreadOf = (room: Room): Record<string, number> => {
 /** 状態を読むだけで書き換えない。確認しただけで既読になるのを避ける。 */
 const cmdStatus = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
-  const room = readRoom(id);
-  if (!room) {
-    notFound(id);
-    return;
-  }
+  const room = loadRoom(id);
+  if (!room) return;
   const as = selfName(flags);
   const seq = latestSeq(id);
   const turn = turnOf(room, seq);
   const hopsLeft = hopsLeftOf(room, seq);
-  const next: Next = room.status === "closed" ? "report" : turn === as ? "say" : "receive";
+  const alone = Object.keys(room.participants).length < MAX_PARTICIPANTS;
+  const next: Next =
+    room.status === "closed" ? "report" : !alone && turn === as ? "say" : "receive";
   emit({
     ok: true,
     room_id: id,
@@ -656,7 +726,9 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
     hint:
       room.status === "closed"
         ? reportHint(id, "このルームは閉じています。")
-        : `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`,
+        : alone
+          ? "相手はまだ参加していません。receive を呼べば参加を待てます。"
+          : `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`,
   });
 };
 
@@ -664,13 +736,10 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
-  const room = readRoom(id);
-  if (!room) {
-    notFound(id);
-    return;
-  }
+  const room = loadRoom(id);
+  if (!room) return;
   if (!(as in room.participants)) {
-    notAParticipant(id, as);
+    notAParticipant(id, as, Object.keys(room.participants));
     return;
   }
   const reason = flags.reason ?? "manual";
@@ -694,38 +763,41 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   });
 };
 
-const safeReadRoom = (id: string): Room | null => {
-  try {
-    return readRoom(id);
-  } catch {
-    return null;
-  }
-};
-
 const cmdLs = (): void => {
   const dir = roomsDir();
   const ids = existsSync(dir) ? readdirSync(dir) : [];
-  const rooms = ids
-    .map(safeReadRoom)
-    .filter((room): room is Room => room !== null)
-    .map((room) => {
-      const seq = latestSeq(room.id);
-      return {
-        room_id: room.id,
-        topic: room.topic,
-        status: room.status,
-        turn: turnOf(room, seq),
-        hops_left: hopsLeftOf(room, seq),
-        unread: unreadOf(room),
-        last_activity_at: room.last_activity_at,
-        log_path: logPath(room.id),
-      };
+  const rooms: Record<string, unknown>[] = [];
+  // 読み取れないルームは一覧から落ちる。件数に出さないと、
+  // 壊れていること自体がどこにも現れなくなる。
+  const unreadable: string[] = [];
+  for (const id of ids) {
+    const room = safeReadRoom(id);
+    if (!room) {
+      unreadable.push(id);
+      continue;
+    }
+    const seq = latestSeq(room.id);
+    rooms.push({
+      room_id: room.id,
+      topic: room.topic,
+      status: room.status,
+      turn: turnOf(room, seq),
+      hops_left: hopsLeftOf(room, seq),
+      unread: unreadOf(room),
+      last_activity_at: room.last_activity_at,
+      log_path: logPath(room.id),
     });
+  }
   emit({
     ok: true,
     rooms,
+    unreadable,
     next: "ask_user",
-    hint: `${rooms.length} 件のルームがあります。`,
+    hint:
+      unreadable.length > 0
+        ? `${rooms.length} 件のルームがあります。` +
+          `${unreadable.join(" と ")} は状態を読み取れません。room.json をユーザーに確認してもらってください。`
+        : `${rooms.length} 件のルームがあります。`,
   });
 };
 
@@ -746,7 +818,7 @@ const cmdCheck = (flags: Flags): void => {
     const lines: string[] = [];
     for (const id of ids) {
       if (only !== undefined && id !== only) continue;
-      const room = readRoom(id);
+      const room = safeReadRoom(id);
       if (!room) continue;
       sweepIdle(room);
       const participant = room.participants[as];
@@ -757,9 +829,11 @@ const cmdCheck = (flags: Flags): void => {
       if (unread <= 0) continue;
       const files = messageFiles(id);
       const from = senderOfFile(files[files.length - 1]);
-      lines.push(
-        `${id}: ${from} から ${unread} 件（残り${hopsLeftOf(room, seq)}往復）— ${room.topic}`,
-      );
+      // 閉じたルームに残りの往復はない。中断を判断する材料として読まれるため、
+      // 続けられる会話と同じ表示にしない。
+      const remaining =
+        room.status === "closed" ? "閉じています" : `残り${hopsLeftOf(room, seq)}往復`;
+      lines.push(`${id}: ${from} から ${unread} 件（${remaining}）— ${room.topic}`);
     }
     if (lines.length === 0) {
       process.exitCode = 1;

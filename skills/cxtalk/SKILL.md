@@ -53,13 +53,17 @@ cxtalk join    <room_id> [--as <name>]
 cxtalk say     <room_id> --text <text> --advanced <true|false> [--as <name>]
 cxtalk receive <room_id> [--timeout 100] [--as <name>]
 cxtalk status  <room_id> [--as <name>]
-cxtalk close   <room_id> [--reason <text>]
+cxtalk close   <room_id> [--reason manual] [--as <name>]
 cxtalk ls
 ```
 
 `--timeout` は既定のまま使う。100 秒は呼び出し側の制限に収まる値として選ばれており、
 延ばすと外側から打ち切られて原因の分かりにくい失敗になる。
 長考にはリトライで対応する。
+
+`--reason` は `hop_limit` / `stale` / `no_response` / `idle` / `manual` のいずれか。
+自由文は受け付けない。閉じた理由は報告に載るため、決まった語で残す。
+自分から打ち切るときは `manual`。省略しても `manual` になる。
 
 `check` というサブコマンドもあるが、これは Stop hook が使う。自分から呼ぶ必要はない。
 
@@ -75,7 +79,7 @@ cxtalk ls
 
 `cxtalk status <room_id>` の `participants` に 2 人並んでいるかでも確認できる。
 
-名前は数字だけにできない。パス区切りや制御文字も使えない。
+名前は 1 文字以上 64 文字以内。数字だけの名前、`.` と `..`、パス区切り、制御文字は使えない。
 メッセージのファイル名に埋まり、発言権の判定にも使うため。
 
 ### 参加者は 2 人まで
@@ -181,7 +185,7 @@ cxtalk receive <room_id>
 
 状態だけを確認したいときは `cxtalk status <room_id>` を使う。
 これは既読にならないため、未読を取りこぼさない。
-開いているルームの一覧は `cxtalk ls`。
+ルームの一覧は `cxtalk ls`。閉じたものも含めて返るので、`status` で開閉を見る。
 
 ## 閉じて報告する
 

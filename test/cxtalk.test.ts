@@ -12,7 +12,7 @@ type Message = { seq: number; from: string; at: string; text: string };
 
 type Reply = {
   ok: boolean;
-  next?: "say" | "receive" | "report" | "ask_user";
+  next?: "say" | "receive" | "report" | "ask_user" | "retry";
   hint?: string;
   error?: string;
   room_id?: string;
@@ -34,7 +34,10 @@ type Reply = {
   last_activity_at?: string;
   log_path?: string;
   rooms?: { room_id: string; log_path: string }[];
+  unreadable?: string[];
 };
+
+type ParticipantState = { last_read: number; timeouts: number; join_timeouts: number };
 
 type Run = { out: string; err: string; code: number };
 
@@ -75,6 +78,16 @@ const roomStatePath = (room: string): string => join(home, "rooms", room, "room.
 
 const roomState = (room: string): { closed_reason: string | null } =>
   JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+
+const participantState = (room: string, name: string): ParticipantState =>
+  JSON.parse(readFileSync(roomStatePath(room), "utf8")).participants[name];
+
+/** 発言を書いてから状態を書くまでの間で落ちた状態を作る。 */
+const dropLastRead = (room: string, name: string): void => {
+  const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+  state.participants[name].last_read = 0;
+  writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+};
 
 /** 最終更新を十分に古くして、掃除の対象にする。 */
 const makeStale = (room: string): void => {
@@ -346,10 +359,13 @@ describe("receive", () => {
 });
 
 describe("status", () => {
+  // 呼び出した本人の名前で確かめる。参加していない名前では、
+  // 既読にする不具合が入っても last_read が無いため常に通ってしまう。
   test("副作用を持たず last_read を更新しない", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
-    j("status", room);
+    j("status", room, "--as", "beta");
+    assert.equal(participantState(room, "beta").last_read, 0);
     const r = j("join", room, "--as", "beta");
     assert.equal(r.messages!.length, 1);
   });
@@ -447,10 +463,21 @@ describe("check", () => {
     assert.equal(run("check", "--as", "beta").code, 1);
   });
 
-  test("room.json が壊れていれば exit 2", () => {
+  // 壊れた 1 件で全件が失われると、未読があること自体が伝わらなくなる。
+  test("壊れたルームがあっても他のルームの未読は知らせる", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
     mkdirSync(join(home, "rooms", "r-broken"), { recursive: true });
     writeFileSync(join(home, "rooms", "r-broken", "room.json"), "{ 壊れた", "utf8");
-    assert.equal(run("check", "--as", "alpha").code, 2);
+    const r = run("check", "--as", "beta");
+    assert.equal(r.code, 0);
+    assert.match(r.out.trim(), new RegExp(`^${room}:`));
+  });
+
+  test("壊れたルームだけなら知らせることはない", () => {
+    mkdirSync(join(home, "rooms", "r-broken"), { recursive: true });
+    writeFileSync(join(home, "rooms", "r-broken", "room.json"), "{ 壊れた", "utf8");
+    assert.equal(run("check", "--as", "alpha").code, 1);
   });
 
   test("JSON ではなく素のテキストを返す", () => {
@@ -902,4 +929,246 @@ describe("アイドルの掃除", () => {
     const room = opened();
     assert.equal(j("join", room, "--as", "alpha").status, "open");
   });
+});
+
+describe("時間切れの数え直し", () => {
+  /** 上限の手前まで待った状態を作る。 */
+  const setTimeouts = (room: string, name: string, count: number): void => {
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+    state.participants[name].timeouts = count;
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+  };
+
+  test("相手の応答が届いたら回数は 0 に戻る", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(participantState(room, "alpha").timeouts, 1);
+    say(room, "beta", "こちらの制約です", true);
+    j("receive", room, "--as", "alpha");
+    assert.equal(participantState(room, "alpha").timeouts, 0);
+  });
+
+  test("数え直した後は上限まで待てる", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    setTimeouts(room, "alpha", 5);
+    say(room, "beta", "こちらの制約です", true);
+    j("receive", room, "--as", "alpha");
+    say(room, "alpha", "では次の論点です", true);
+    const r = j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(r.status, "timeout");
+    assert.equal(r.retries_left, 5);
+  });
+
+  test("応答が届いた後の時間切れで会話を閉じない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    setTimeouts(room, "alpha", 5);
+    say(room, "beta", "こちらの制約です", true);
+    j("receive", room, "--as", "alpha");
+    say(room, "alpha", "では次の論点です", true);
+    j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(roomState(room).closed_reason, null);
+  });
+
+  test("自分の発言だけでは数え直さない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    dropLastRead(room, "alpha");
+    j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(participantState(room, "alpha").timeouts, 1);
+  });
+});
+
+describe("発言の直後に落ちた場合", () => {
+  test("自分の発言を相手の発言として返さない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    dropLastRead(room, "alpha");
+    assert.equal(j("receive", room, "--timeout", "1", "--as", "alpha").status, "timeout");
+  });
+
+  test("既読の位置は落ちる前まで進む", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    dropLastRead(room, "alpha");
+    j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(participantState(room, "alpha").last_read, 1);
+  });
+
+  test("相手には従来どおり届く", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    dropLastRead(room, "alpha");
+    const r = j("receive", room, "--as", "beta");
+    assert.equal(r.status, "message");
+    assert.equal(r.messages!.length, 1);
+  });
+});
+
+describe("閉じたルームと参加者の判定順", () => {
+  const closedRoom = (): string => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    return room;
+  };
+
+  test("参加していない名前は閉じたルームでも断られる", () => {
+    const r = j("say", closedRoom(), "--text", "x", "--advanced", "true", "--as", "mallory");
+    assert.equal(r.error, "not_a_participant");
+  });
+
+  test("参加していない名前に要約を促さない", () => {
+    const r = j("say", closedRoom(), "--text", "x", "--advanced", "true", "--as", "mallory");
+    assert.notEqual(r.next, "report");
+    assert.equal(r.log_path, undefined);
+  });
+
+  test("参加者には閉じている旨を返す", () => {
+    const r = j("say", closedRoom(), "--text", "x", "--advanced", "true", "--as", "beta");
+    assert.equal(r.error, "closed");
+    assert.equal(r.next, "report");
+  });
+});
+
+describe("--topic", () => {
+  test("省略を断る", () => {
+    const r = j("open", "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.next, "retry");
+  });
+
+  test("断られたときルームは作られない", () => {
+    j("open", "--as", "alpha");
+    assert.equal(j("ls").rooms!.length, 0);
+  });
+});
+
+describe("相手がいないルームの案内", () => {
+  const alone = (): string => j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+
+  for (const command of ["join", "status"]) {
+    test(`${command} は断られる say を促さない`, () => {
+      assert.equal(j(command, alone(), "--as", "alpha").next, "receive");
+    });
+  }
+
+  test("相手の参加待ちであることを伝える", () => {
+    assert.match(j("join", alone(), "--as", "alpha").hint!, /まだ参加していません/);
+  });
+});
+
+describe("壊れた room.json", () => {
+  const broken = (): string => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    writeFileSync(roomStatePath(room), "{ 壊れた", "utf8");
+    return room;
+  };
+
+  for (const command of ["status", "join", "close", "receive"]) {
+    test(`${command} は理由を JSON で返す`, () => {
+      const r = j(command, broken(), "--as", "alpha");
+      assert.equal(r.ok, false);
+      assert.equal(r.error, "corrupt_room");
+      assert.equal(r.next, "ask_user");
+    });
+  }
+
+  test("say も理由を JSON で返す", () => {
+    const r = j("say", broken(), "--text", "x", "--advanced", "true", "--as", "alpha");
+    assert.equal(r.error, "corrupt_room");
+  });
+
+  test("異常終了として扱わない", () => {
+    const r = run("status", broken(), "--as", "alpha");
+    assert.equal(r.err, "");
+    assert.equal(r.code, 0);
+  });
+
+  test("ls は読めないルームを挙げる", () => {
+    const room = broken();
+    assert.deepEqual(j("ls").unreadable, [room]);
+  });
+});
+
+describe("check の表示", () => {
+  const closedWithUnread = (): string => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    return room;
+  };
+
+  test("閉じたルームに残り往復数を出さない", () => {
+    closedWithUnread();
+    assert.doesNotMatch(run("check", "--as", "beta").out, /残り/);
+  });
+
+  test("閉じたルームは閉じていると伝える", () => {
+    closedWithUnread();
+    assert.match(run("check", "--as", "beta").out, /閉じています/);
+  });
+
+  test("開いているルームには残り往復数を出す", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    assert.match(run("check", "--as", "beta").out, /残り/);
+  });
+});
+
+describe("参加者名の長さと制御文字", () => {
+  test("64 文字は通る", () => {
+    assert.equal(j("open", "--topic", TOPIC, "--as", "n".repeat(64)).ok, true);
+  });
+
+  test("64 文字を超える名前を断る", () => {
+    assert.equal(j("open", "--topic", TOPIC, "--as", "n".repeat(65)).ok, false);
+  });
+
+  test("拒否の理由に長さの条件を含める", () => {
+    assert.match(j("open", "--topic", TOPIC, "--as", "n".repeat(65)).hint!, /64/);
+  });
+
+  test("長い名前をそのまま繰り返さない", () => {
+    assert.ok(j("open", "--topic", TOPIC, "--as", "n".repeat(200)).hint!.length < 200);
+  });
+
+  // 表示すると見えないため、参加者一覧では見分けがつかない名前になる。
+  for (const [label, code] of [
+    ["DEL", 0x7f],
+    ["C1", 0x85],
+  ] as const) {
+    test(`${label} を含む名前を断る`, () => {
+      const name = `a${String.fromCodePoint(code)}b`;
+      assert.equal(j("open", "--topic", TOPIC, "--as", name).ok, false);
+    });
+  }
+});
+
+describe("名乗りを取り違えたときの案内", () => {
+  test("参加者の名前を示す", () => {
+    const room = opened();
+    const r = j("say", room, "--text", "x", "--advanced", "true", "--as", "carol");
+    assert.deepEqual(r.participants, ["alpha", "beta"]);
+  });
+
+  // 満室では join できないため、join を促すと指示が循環する。
+  test("満室では join を促さない", () => {
+    const room = opened();
+    const r = j("say", room, "--text", "x", "--advanced", "true", "--as", "carol");
+    assert.doesNotMatch(r.hint!, /join してください/);
+  });
+
+  for (const command of ["say", "join"]) {
+    test(`満室の ${command} は名乗りの指定を促す`, () => {
+      const room = opened();
+      const args =
+        command === "say"
+          ? [command, room, "--text", "x", "--advanced", "true", "--as", "carol"]
+          : [command, room, "--as", "carol"];
+      assert.match(j(...args).hint!, /--as/);
+    });
+  }
 });
