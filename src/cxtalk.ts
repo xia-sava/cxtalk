@@ -41,6 +41,21 @@ const CLOSED_REASONS: readonly string[] = [
   "manual",
 ];
 
+/** コマンドごとに受け付けるフラグ。打ち間違いを既定値として飲み込まないために持つ。 */
+const KNOWN_FLAGS: Record<string, readonly string[]> = {
+  open: ["topic", "max-hops", "as"],
+  join: ["as"],
+  say: ["text", "advanced", "as"],
+  receive: ["timeout", "as"],
+  status: ["as"],
+  close: ["reason", "as"],
+  ls: [],
+  check: ["as", "room"],
+};
+
+const COMMANDS = Object.keys(KNOWN_FLAGS);
+const ALL_FLAGS = new Set(Object.values(KNOWN_FLAGS).flat());
+
 const homeDir = (): string => process.env.CXTALK_HOME ?? join(homedir(), "cxtalk");
 const roomsDir = (): string => join(homeDir(), "rooms");
 const roomDir = (id: string): string => join(roomsDir(), id);
@@ -83,10 +98,30 @@ const parseArgv = (argv: string[]): Parsed => {
       error = `--${key} に値がありません。値を添えて呼び直してください。`;
       continue;
     }
+    // 値がフラグ名そのものなら、書き忘れた値の代わりに次のフラグを飲み込んでいる。
+    // 本文がハイフンで始まる場合を通すため、フラグ名と同じ語だけを誤りとする。
+    if (value.startsWith("--") && ALL_FLAGS.has(value.slice(2))) {
+      error =
+        `--${key} の値がありません。${value} を値として受け取りました。` +
+        `値を添えて呼び直してください。`;
+      continue;
+    }
     flags[key] = value;
     i++;
   }
-  return { command: words[0] ?? "", positional: words.slice(1), flags, error };
+  const command = words[0] ?? "";
+  const known = KNOWN_FLAGS[command];
+  if (error === undefined && known !== undefined) {
+    const unknown = Object.keys(flags).filter((name) => !known.includes(name));
+    if (unknown.length > 0) {
+      error =
+        `${command} は ${unknown.map((name) => `--${name}`).join(" と ")} を受け付けません。` +
+        (known.length > 0
+          ? `使えるのは ${known.map((name) => `--${name}`).join(" / ")} です。`
+          : "このコマンドはフラグを受け付けません。");
+    }
+  }
+  return { command, positional: words.slice(1), flags, error };
 };
 
 const emit = (payload: Record<string, unknown>): void => {
@@ -172,6 +207,17 @@ const turnOf = (room: Room, seq: number): string => {
 const hopsLeftOf = (room: Room, seq: number): number =>
   Math.max(0, room.max_hops - hopsOf(seq));
 
+/** 次の発言で上限に達し、相手が応答できなくなる状態か。 */
+const isFinalTurn = (room: Room, seq: number): boolean => hopsLeftOf(room, seq) === 0;
+
+const FINAL_TURN_NOTE =
+  "これが最後の発言になります。相手は応答できないため、" +
+  "合意していない点を合意したことにせず、対立は対立のまま書いてください。";
+
+/** 発言を促す hint。上限に達する発言なら、書く前にそう伝える。 */
+const sayHint = (room: Room, seq: number, head: string): string =>
+  isFinalTurn(room, seq) ? `${head}${FINAL_TURN_NOTE}` : head;
+
 /** 1 以上の整数だけを受ける。不正なら null を返し、呼び出し側で断る。 */
 const positiveInt = (raw: string | undefined, fallback: number): number | null => {
   if (raw === undefined) return fallback;
@@ -187,6 +233,16 @@ const invalidArgument = (hint: string, id?: string): void => {
     next: "retry",
     hint,
   });
+};
+
+/**
+ * room_id が渡されていなければ retry で断って true。
+ * 存在しないルームとして扱うと、呼び出した側が自力で直せる誤りを人間へ回すことになる。
+ */
+const rejectMissingRoom = (id: string): boolean => {
+  if (id !== "") return false;
+  invalidArgument("room_id が指定されていません。コマンドに room_id を添えて呼び直してください。");
+  return true;
 };
 
 /**
@@ -342,23 +398,24 @@ const cmdOpen = (flags: Flags): void => {
 };
 
 const joinHint = (
-  id: string,
-  closed: boolean,
+  room: Room,
+  seq: number,
   unread: number,
   rejoined: boolean,
   next: Next,
   alone: boolean,
 ): string => {
-  if (closed) return reportHint(id, "このルームは閉じています。");
+  if (room.status === "closed") return reportHint(room.id, "このルームは閉じています。");
   const head = `未読 ${unread} 件。${rejoined ? "再入場です。" : "参加しました。"}`;
   if (alone) return `${head}相手はまだ参加していません。receive を呼べば参加を待てます。`;
   return next === "say"
-    ? `${head}あなたの番です。say で発言してください。`
+    ? sayHint(room, seq, `${head}あなたの番です。say で発言してください。`)
     : `${head}相手の発言を receive で待ってください。`;
 };
 
 const cmdJoin = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
+  if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
@@ -403,12 +460,13 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     turn,
     log_path: logPath(id),
     next,
-    hint: joinHint(id, closed, messages.length, rejoined, next, alone),
+    hint: joinHint(room, seq, messages.length, rejoined, next, alone),
   });
 };
 
 const cmdSay = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
+  if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
@@ -581,7 +639,7 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
       hops_left: hopsLeftOf(room, seq),
       turn: turnOf(room, seq),
       next: "say",
-      hint: "相手の発言が届きました。内容を踏まえて say で応答してください。",
+      hint: sayHint(room, seq, "相手の発言が届きました。内容を踏まえて say で応答してください。"),
     };
   }
 
@@ -594,10 +652,13 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
       status: "your_turn",
       room_id: id,
       next: "say",
-      hint:
+      hint: sayHint(
+        room,
+        seq,
         seq === 0
           ? "相手が参加しました。第一声を say で送ってください。"
           : "あなたの発言番です。待たずに say を呼んでください。",
+      ),
     };
   }
   return null;
@@ -617,6 +678,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     return;
   }
   const id = positional[0] ?? "";
+  if (rejectMissingRoom(id)) return;
   const opening = loadRoom(id);
   if (!opening) return;
   if (!(as in opening.participants)) {
@@ -702,6 +764,7 @@ const unreadOf = (room: Room): Record<string, number> => {
 /** 状態を読むだけで書き換えない。確認しただけで既読になるのを避ける。 */
 const cmdStatus = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
+  if (rejectMissingRoom(id)) return;
   const room = loadRoom(id);
   if (!room) return;
   const as = selfName(flags);
@@ -711,6 +774,7 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   const alone = Object.keys(room.participants).length < MAX_PARTICIPANTS;
   const next: Next =
     room.status === "closed" ? "report" : !alone && turn === as ? "say" : "receive";
+  const standing = `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`;
   emit({
     ok: true,
     room_id: id,
@@ -728,12 +792,15 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
         ? reportHint(id, "このルームは閉じています。")
         : alone
           ? "相手はまだ参加していません。receive を呼べば参加を待てます。"
-          : `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`,
+          : next === "say"
+            ? sayHint(room, seq, standing)
+            : standing,
   });
 };
 
 const cmdClose = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
+  if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
@@ -751,7 +818,8 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     );
     return;
   }
-  if (room.status === "open") closeRoom(room, reason as ClosedReason);
+  const alreadyClosed = room.status === "closed";
+  if (!alreadyClosed) closeRoom(room, reason as ClosedReason);
   emit({
     ok: true,
     room_id: id,
@@ -759,7 +827,10 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     hops_used: hopsOf(latestSeq(id)),
     log_path: logPath(id),
     next: "report",
-    hint: reportHint(id, "ルームを閉じました。"),
+    hint: reportHint(
+      id,
+      alreadyClosed ? "このルームは既に閉じています。" : "ルームを閉じました。",
+    ),
   });
 };
 
@@ -788,6 +859,11 @@ const cmdLs = (): void => {
       log_path: logPath(room.id),
     });
   }
+  const guide =
+    rooms.length === 0
+      ? "ルームはありません。会話を始めるなら open を、参加するなら room_id をユーザーに確認してください。"
+      : `${rooms.length} 件のルームがあります。どのルームの話かをユーザーに確認してください。` +
+        `未読があるルームは join で続きを読めます。`;
   emit({
     ok: true,
     rooms,
@@ -795,9 +871,9 @@ const cmdLs = (): void => {
     next: "ask_user",
     hint:
       unreadable.length > 0
-        ? `${rooms.length} 件のルームがあります。` +
-          `${unreadable.join(" と ")} は状態を読み取れません。room.json をユーザーに確認してもらってください。`
-        : `${rooms.length} 件のルームがあります。`,
+        ? `${guide}${unreadable.join(" と ")} は状態を読み取れません。` +
+          `room.json をユーザーに確認してもらってください。`
+        : guide,
   });
 };
 
@@ -882,8 +958,12 @@ if (error !== undefined) {
       emit({
         ok: false,
         error: "unknown_command",
-        next: "ask_user",
-        hint: `${command} は未対応のコマンドです。`,
+        next: "retry",
+        hint:
+          (command === ""
+            ? "コマンドが指定されていません。"
+            : `${command} は未対応のコマンドです。`) +
+          `使えるのは ${COMMANDS.join(" / ")} です。`,
       });
   }
 }

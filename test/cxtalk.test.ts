@@ -1172,3 +1172,119 @@ describe("名乗りを取り違えたときの案内", () => {
     });
   }
 });
+
+describe("値を書き忘れてフラグ名を飲み込む", () => {
+  test("フラグ名そのものは値として受けない", () => {
+    const room = opened();
+    const r = j("say", room, "--text", "--as", "--advanced", "true");
+    assert.equal(r.ok, false);
+    assert.equal(r.next, "retry");
+  });
+
+  test("断ったなら発言は残らない", () => {
+    const room = opened();
+    j("say", room, "--text", "--as", "--advanced", "true");
+    assert.equal(j("status", room).unread!.beta, 0);
+  });
+
+  // 本文がハイフンで始まる場合を守るため、弾くのはフラグ名と同じ語だけに限る。
+  for (const [label, text] of [
+    ["水平線", "--- 区切り線から始まる本文"],
+    ["箇条書き", "- 箇条書きから始まる本文"],
+  ] as const) {
+    test(`${label}で始まる本文は通す`, () => {
+      const room = opened();
+      assert.equal(say(room, "alpha", text, true).ok, true);
+    });
+  }
+});
+
+describe("未知のフラグ", () => {
+  test("打ち間違いを既定値として飲み込まない", () => {
+    const r = j("open", "--topic", TOPIC, "--max-hop", "3", "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.next, "retry");
+  });
+
+  test("使えるフラグを示す", () => {
+    const r = j("open", "--topic", TOPIC, "--max-hop", "3", "--as", "alpha");
+    assert.match(r.hint!, /--max-hops/);
+  });
+
+  test("断られたときルームは作られない", () => {
+    j("open", "--topic", TOPIC, "--max-hop", "3", "--as", "alpha");
+    assert.equal(j("ls").rooms!.length, 0);
+  });
+
+  test("フラグを取らないコマンドは全て断る", () => {
+    assert.equal(j("ls", "--as", "alpha").ok, false);
+  });
+});
+
+describe("room_id の欠落", () => {
+  // 呼び出した側が自力で直せる誤りなので、存在しないルームとして人間へ回さない。
+  for (const command of ["join", "say", "receive", "status", "close"]) {
+    test(`${command} は retry で断る`, () => {
+      const r = j(command, "--as", "alpha");
+      assert.equal(r.ok, false);
+      assert.equal(r.next, "retry");
+    });
+  }
+});
+
+describe("コマンドの指定", () => {
+  test("引数なしはコマンドの欠落として伝える", () => {
+    const r = j();
+    assert.equal(r.ok, false);
+    assert.match(r.hint!, /コマンドが指定されていません/);
+  });
+
+  test("使えるコマンドを示す", () => {
+    assert.match(j().hint!, /open/);
+  });
+
+  test("未対応のコマンドは retry で断る", () => {
+    assert.equal(j("frobnicate").next, "retry");
+  });
+});
+
+describe("最後の発言を先に伝える", () => {
+  for (const command of ["receive", "join", "status"]) {
+    test(`${command} は上限に達する発言の前に知らせる`, () => {
+      const room = opened(1);
+      say(room, "alpha", "最初の論点です", true);
+      assert.match(j(command, room, "--as", "beta").hint!, /最後の発言/);
+    });
+  }
+
+  test("余裕があるうちは知らせない", () => {
+    const room = opened(5);
+    say(room, "alpha", "最初の論点です", true);
+    assert.doesNotMatch(j("receive", room, "--as", "beta").hint!, /最後の発言/);
+  });
+
+  test("相手の番なら知らせない", () => {
+    const room = opened(1);
+    say(room, "alpha", "最初の論点です", true);
+    assert.doesNotMatch(j("status", room, "--as", "alpha").hint!, /最後の発言/);
+  });
+});
+
+describe("実行していない動作を報告しない", () => {
+  test("既に閉じたルームには閉じたと言わない", () => {
+    const room = opened();
+    j("close", room, "--as", "alpha");
+    assert.match(j("close", room, "--as", "alpha").hint!, /既に閉じています/);
+  });
+});
+
+describe("一覧の案内", () => {
+  test("ルームがあるとき次の行動を書く", () => {
+    opened();
+    assert.match(j("ls").hint!, /確認してください/);
+  });
+
+  test("ルームが無いときも次の行動を書く", () => {
+    assert.match(j("ls").hint!, /open/);
+  });
+});
