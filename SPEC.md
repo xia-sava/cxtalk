@@ -130,7 +130,7 @@ cxtalk open   --topic <text> [--max-hops 5] [--as <name>]
 cxtalk join   <room_id> [--as <name>]
 cxtalk say    <room_id> --text <text> --advanced <true|false> [--as <name>]
 cxtalk receive <room_id>... [--timeout 100] [--as <name>]
-cxtalk status <room_id>
+cxtalk status <room_id> [--as <name>]
 cxtalk close  <room_id> [--reason manual]
 cxtalk ls
 cxtalk check  [--as <name>] [--room <room_id>]

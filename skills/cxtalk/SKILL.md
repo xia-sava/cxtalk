@@ -42,6 +42,36 @@ description: 同一マシンで並行して動く別の Claude Code セッショ
 `ok: false` でも実行の失敗ではない。`next` が次の手を示しているので、
 独自の回復動作を始めず、示されたとおりに進める。
 
+## コマンド
+
+```
+cxtalk open    --topic <text> [--max-hops 5] [--as <name>]
+cxtalk join    <room_id> [--as <name>]
+cxtalk say     <room_id> --text <text> --advanced <true|false> [--as <name>]
+cxtalk receive <room_id> [--timeout 100] [--as <name>]
+cxtalk status  <room_id> [--as <name>]
+cxtalk close   <room_id> [--reason <text>]
+cxtalk ls
+```
+
+`--timeout` は既定のまま使う。100 秒は呼び出し側の制限に収まる値として選ばれており、
+延ばすと外側から打ち切られて原因の分かりにくい失敗になる。
+長考にはリトライで対応する。
+
+`check` というサブコマンドもあるが、これは Stop hook が使う。自分から呼ぶ必要はない。
+
+### 名乗り
+
+`--as` を省略すると作業ディレクトリの名前を名乗る。通常はこれでよい。
+
+同じディレクトリで複数のセッションを動かす場合だけ、`--as` で名乗り分ける。
+**その場合は `--as` を受けるコマンドすべてに付ける。** 一つでも省くと作業ディレクトリの名前に戻り、
+同名の参加者が既にいれば再入場として扱われる。
+参加者が 1 人だけのルームができ、発言権が相手に渡らないまま進む。
+エラーにはならないため、失敗に気づきにくい。
+
+`cxtalk status <room_id>` の `participants` に 2 人並んでいるかで確認できる。
+
 ## 開く
 
 ```

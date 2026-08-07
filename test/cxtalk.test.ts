@@ -582,3 +582,30 @@ describe("終端の伝え方", () => {
     assert.match(r.hint!, /異常ではなく/);
   });
 });
+
+describe("名乗り", () => {
+  test("--as を省略した join は同名の参加者として再入場になる", () => {
+    const room = j("open", "--topic", TOPIC).room_id!;
+    assert.equal(j("join", room).rejoined, true);
+  });
+
+  test("同名で入ると参加者は 1 人のまま", () => {
+    const room = j("open", "--topic", TOPIC).room_id!;
+    j("join", room);
+    assert.deepEqual(j("status", room).participants, ["cxtalk"]);
+  });
+
+  test("--as で名乗り分ければ別人として並ぶ", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    j("join", room, "--as", "bob");
+    assert.deepEqual([...j("status", room).participants!].sort(), ["alice", "bob"]);
+  });
+
+  test("同名のままでは発言権が相手に渡らない", () => {
+    const room = j("open", "--topic", TOPIC).room_id!;
+    j("join", room);
+    const r = j("say", room, "--text", "ひとりごと", "--advanced", "true");
+    assert.equal(r.ok, true);
+    assert.equal(r.turn, "cxtalk");
+  });
+});
