@@ -1,0 +1,14 @@
+{
+  "name": "xia-sava",
+  "description": "xia-sava が公開する Claude Code 用のプラグイン",
+  "owner": {
+    "name": "ISIGE, Akira"
+  },
+  "plugins": [
+    {
+      "name": "cxtalk",
+      "source": "./",
+      "description": "同一マシンで並行して動く Claude Code セッション同士を直接会話させる"
+    }
+  ]
+}

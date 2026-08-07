@@ -504,6 +504,10 @@ marketplace への登録も install も要さず、次のセッションから `
 
 開発中は `claude --plugin-dir <path>` で読み込み、`claude plugin validate <path>` で検証する。
 
+配布する場合に備え、`.claude-plugin/marketplace.json` でこの repo 自身を marketplace として
+定義している。marketplace 経由で install するとプラグインキャッシュへ複製されるため、
+repo をその場で読む symlink とは変更の反映のされ方が異なる。
+
 ## 初期実装に含めないもの
 
 - **発言の繰り返し検知**（類似度計算による堂々巡りの検出）。実装量に対して閾値調整の見通しが立たない。

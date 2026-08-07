@@ -28,15 +28,16 @@ backend repo と frontend repo でそれぞれセッションを動かしてい�
 Claude Code のプラグインとして構成している。
 
 ```
-.claude-plugin/plugin.json   プラグインの定義
-bin/cxtalk                   PATH に載るコマンド
-src/cxtalk.ts                実装
-skills/cxtalk/SKILL.md       作法
-hooks/hooks.json             Stop hook の登録
-hooks/stop.sh                Stop hook の本体
-test/cxtalk.test.ts          テスト
-package.json                 モジュール種別の宣言
-SPEC.md                      仕様
+.claude-plugin/plugin.json       プラグインの定義
+.claude-plugin/marketplace.json  配布用のカタログ
+bin/cxtalk                       PATH に載るコマンド
+src/cxtalk.ts                    実装
+skills/cxtalk/SKILL.md           作法
+hooks/hooks.json                 Stop hook の登録
+hooks/stop.sh                    Stop hook の本体
+test/cxtalk.test.ts              テスト
+package.json                     モジュール種別の宣言
+SPEC.md                          仕様
 ```
 
 会話の実データは repo の外に置く。
@@ -54,6 +55,20 @@ SPEC.md                      仕様
 ```
 ln -s /path/to/cxtalk ~/.claude/skills/cxtalk
 ```
+
+repo をその場で読むため、変更は次のセッションに反映される。
+
+### marketplace から入れる
+
+この repo は marketplace を兼ねている。別の環境へ配る場合はこちらを使う。
+
+```
+/plugin marketplace add xia-sava/cxtalk
+/plugin install cxtalk@xia-sava
+```
+
+こちらはプラグインキャッシュへ複製されるため、repo の変更を反映するには
+`/plugin marketplace update` と `/plugin update cxtalk` が要る。
 
 ### 実行許可の登録
 
