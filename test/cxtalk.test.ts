@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -70,6 +70,18 @@ const opened = (maxHops = 5): string => {
 
 const say = (room: string, as: string, text: string, advanced: boolean): Reply =>
   j("say", room, "--text", text, "--advanced", String(advanced), "--as", as);
+
+const roomStatePath = (room: string): string => join(home, "rooms", room, "room.json");
+
+const roomState = (room: string): { closed_reason: string | null } =>
+  JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+
+/** 最終更新を十分に古くして、掃除の対象にする。 */
+const makeStale = (room: string): void => {
+  const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+  state.last_activity_at = "2000-01-01T00:00:00+09:00";
+  writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+};
 
 describe("open", () => {
   test("room_id と自分の名前を返す", () => {
@@ -420,10 +432,27 @@ describe("check", () => {
     assert.equal(run("check", "--as", "alpha").code, 1);
   });
 
-  test("閉じたルームでは exit 1", () => {
+  test("閉じていても未読があれば知らせる", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
     j("close", room, "--as", "alpha");
+    assert.equal(run("check", "--as", "beta").code, 0);
+  });
+
+  test("閉じたルームでも未読がなければ exit 1", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("receive", room, "--as", "beta");
+    j("close", room, "--as", "alpha");
+    assert.equal(run("check", "--as", "beta").code, 1);
+  });
+
+  test("読めば次からは知らせない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    assert.equal(run("check", "--as", "beta").code, 0);
+    j("receive", room, "--as", "beta");
     assert.equal(run("check", "--as", "beta").code, 1);
   });
 
@@ -601,11 +630,119 @@ describe("名乗り", () => {
     assert.deepEqual([...j("status", room).participants!].sort(), ["alice", "bob"]);
   });
 
-  test("同名のままでは発言権が相手に渡らない", () => {
+  test("参加者が自分だけなら発言できない", () => {
     const room = j("open", "--topic", TOPIC).room_id!;
     j("join", room);
     const r = j("say", room, "--text", "ひとりごと", "--advanced", "true");
-    assert.equal(r.ok, true);
-    assert.equal(r.turn, "cxtalk");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "alone_in_room");
+    assert.equal(r.next, "ask_user");
+  });
+
+  test("相手が来るまでは開いた本人も発言できない", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    assert.equal(say(room, "alice", "第一声", true).error, "alone_in_room");
+  });
+
+  test("相手が来れば発言できる", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    j("join", room, "--as", "bob");
+    assert.equal(say(room, "alice", "第一声", true).ok, true);
+  });
+});
+
+describe("引数の解釈", () => {
+  test("本文が -- で始まっても失われない", () => {
+    const room = opened();
+    const text = "--- 水平線ではじまる本文";
+    say(room, "alpha", text, true);
+    assert.equal(j("join", room, "--as", "beta").messages![0].text, text);
+  });
+
+  test("箇条書きと区切り線を含む本文をそのまま保つ", () => {
+    const room = opened();
+    const text = "- ひとつめ\n- ふたつめ\n\n--- 区切り";
+    say(room, "alpha", text, true);
+    assert.equal(j("join", room, "--as", "beta").messages![0].text, text);
+  });
+
+  test("--advanced に解釈できない値を渡すと理由が分かる", () => {
+    const room = opened();
+    const r = j("say", room, "--text", "本文", "--advanced", "yes", "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
+    assert.match(r.hint!, /yes/);
+  });
+
+  test("--text の欠落と --advanced の欠落を区別する", () => {
+    const room = opened();
+    assert.match(j("say", room, "--advanced", "true", "--as", "alpha").hint!, /--text/);
+    assert.match(j("say", room, "--text", "本文", "--as", "alpha").hint!, /--advanced/);
+  });
+});
+
+describe("数値フラグ", () => {
+  test("--max-hops が数値でなければ断る", () => {
+    const r = j("open", "--topic", TOPIC, "--max-hops", "abc", "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
+  });
+
+  test("--max-hops が 0 以下なら断る", () => {
+    assert.equal(j("open", "--topic", TOPIC, "--max-hops", "0", "--as", "alpha").ok, false);
+    assert.equal(j("open", "--topic", TOPIC, "--max-hops", "-1", "--as", "alpha").ok, false);
+  });
+
+  test("小数は受けない", () => {
+    assert.equal(j("open", "--topic", TOPIC, "--max-hops", "2.5", "--as", "alpha").ok, false);
+  });
+
+  test("--timeout が数値でなければ待たずに断る", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    const r = j("receive", room, "--timeout", "abc", "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
+  });
+});
+
+describe("複数ルームの待機", () => {
+  test("room_id を 2 つ渡すと断る", () => {
+    const r = j("receive", opened(), opened(), "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "multiple_rooms");
+    assert.equal(r.next, "ask_user");
+  });
+
+  test("1 つなら通常どおり動く", () => {
+    assert.equal(j("receive", opened(), "--as", "alpha").status, "your_turn");
+  });
+});
+
+describe("アイドルの掃除", () => {
+  test("無音のまま放置されたルームは閉じられる", () => {
+    const room = opened();
+    makeStale(room);
+    const r = j("join", room, "--as", "alpha");
+    assert.equal(r.status, "closed");
+    assert.equal(r.next, "report");
+  });
+
+  test("掃除の理由は idle", () => {
+    const room = opened();
+    makeStale(room);
+    j("join", room, "--as", "alpha");
+    assert.equal(roomState(room).closed_reason, "idle");
+  });
+
+  test("掃除されたルームには発言できない", () => {
+    const room = opened();
+    makeStale(room);
+    assert.equal(say(room, "alpha", "まだ話したい", true).ok, false);
+  });
+
+  test("新しいルームは掃除されない", () => {
+    const room = opened();
+    assert.equal(j("join", room, "--as", "alpha").status, "open");
   });
 });

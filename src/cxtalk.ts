@@ -68,7 +68,7 @@ const parseArgv = (argv: string[]): Parsed => {
     }
     const key = token.slice(2);
     const value = argv[i + 1];
-    if (value === undefined || value.startsWith("--")) {
+    if (value === undefined) {
       flags[key] = "true";
     } else {
       flags[key] = value;
@@ -132,6 +132,23 @@ const selfName = (flags: Flags): string => flags.as ?? basename(process.cwd());
 
 const hopsOf = (seq: number): number => Math.ceil(seq / 2);
 
+/** 1 以上の整数だけを受ける。不正なら null を返し、呼び出し側で断る。 */
+const positiveInt = (raw: string | undefined, fallback: number): number | null => {
+  if (raw === undefined) return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : null;
+};
+
+const invalidArgument = (hint: string, id?: string): void => {
+  emit({
+    ok: false,
+    error: "invalid_argument",
+    ...(id === undefined ? {} : { room_id: id }),
+    next: "ask_user",
+    hint,
+  });
+};
+
 const otherParticipant = (room: Room, me: string): string =>
   Object.keys(room.participants).find((name) => name !== me) ?? me;
 
@@ -159,7 +176,11 @@ const newRoomId = (): string => {
 const cmdOpen = (flags: Flags): void => {
   const as = selfName(flags);
   const topic = flags.topic ?? "";
-  const maxHops = Number(flags["max-hops"] ?? DEFAULT_MAX_HOPS);
+  const maxHops = positiveInt(flags["max-hops"], DEFAULT_MAX_HOPS);
+  if (maxHops === null) {
+    invalidArgument("--max-hops には 1 以上の整数を指定してください。");
+    return;
+  }
   const id = newRoomId();
   mkdirSync(messagesDir(id), { recursive: true });
   writeRoom({
@@ -271,18 +292,48 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     });
     return;
   }
+  if (Object.keys(room.participants).length < 2) {
+    emit({
+      ok: false,
+      error: "alone_in_room",
+      room_id: id,
+      participants: Object.keys(room.participants),
+      next: "ask_user",
+      hint:
+        "このルームにはまだ自分しかいません。相手が参加するまで発言できません。" +
+        "同じ作業ディレクトリで複数のセッションを動かす場合は、--as で名乗り分けてください。",
+    });
+    return;
+  }
   const text = flags.text;
   const advanced = flags.advanced;
-  if (text === undefined || (advanced !== "true" && advanced !== "false")) {
+  if (text === undefined) {
+    emit({
+      ok: false,
+      error: "missing_argument",
+      room_id: id,
+      next: "ask_user",
+      hint: "--text は必須です。発言の本文を渡してください。",
+    });
+    return;
+  }
+  if (advanced === undefined) {
     emit({
       ok: false,
       error: "missing_argument",
       room_id: id,
       next: "ask_user",
       hint:
-        "--text と --advanced は必須です。相手への同意・お礼・要約・確認だけの発言は " +
+        "--advanced は必須です。相手への同意・お礼・要約・確認だけの発言は " +
         "--advanced false を指定してください。",
     });
+    return;
+  }
+  if (advanced !== "true" && advanced !== "false") {
+    invalidArgument(
+      `--advanced には true か false を指定してください。${advanced} は解釈できません。`,
+      id,
+    );
     return;
   }
   if (room.turn !== as) {
@@ -411,15 +462,29 @@ const pollOnce = (ids: string[], as: string): Record<string, unknown> | null => 
 const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => {
   const ids = positional;
   const as = selfName(flags);
-  const timeout = Number(flags.timeout ?? DEFAULT_TIMEOUT_SECONDS);
 
-  if (ids.length === 0 || ids.some((id) => readRoom(id) === null)) {
+  if (ids.length > 1) {
+    emit({
+      ok: false,
+      error: "multiple_rooms",
+      next: "ask_user",
+      hint:
+        "複数ルームの同時待機には対応していません。room_id を 1 つだけ指定して呼び直してください。",
+    });
+    return;
+  }
+  if (ids.length === 0 || readRoom(ids[0]) === null) {
     emit({
       ok: false,
       error: "no_such_room",
       next: "ask_user",
       hint: "待ち受けるルームが見つかりません。room_id をユーザーに確認してください。",
     });
+    return;
+  }
+  const timeout = positiveInt(flags.timeout, DEFAULT_TIMEOUT_SECONDS);
+  if (timeout === null) {
+    invalidArgument("--timeout には 1 以上の整数を指定してください。", ids[0]);
     return;
   }
 
@@ -595,7 +660,7 @@ const cmdCheck = (flags: Flags): void => {
       const room = readRoom(id);
       if (!room) continue;
       sweepIdle(room);
-      if (room.status !== "open" || room.turn !== as) continue;
+      if (room.turn !== as) continue;
       const participant = room.participants[as];
       if (!participant) continue;
       const files = messageFiles(id);
