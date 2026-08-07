@@ -21,7 +21,7 @@ backend repo と frontend repo でそれぞれセッションを動かしてい�
 
 ## 状態
 
-コマンドとテストは完成。`skills/cxtalk/SKILL.md` は未着手。
+コマンド・テスト・skill が揃っている。
 
 ## 構成
 
@@ -31,7 +31,7 @@ Claude Code のプラグインとして構成している。
 .claude-plugin/plugin.json   プラグインの定義
 bin/cxtalk                   PATH に載るコマンド
 src/cxtalk.ts                実装
-skills/cxtalk/SKILL.md       作法（未着手）
+skills/cxtalk/SKILL.md       作法
 hooks/hooks.json             Stop hook の登録
 hooks/stop.sh                Stop hook の本体
 test/cxtalk.test.ts          テスト
