@@ -32,7 +32,8 @@ type Reply = {
   unread?: Record<string, number>;
   participants?: string[];
   last_activity_at?: string;
-  rooms?: unknown[];
+  log_path?: string;
+  rooms?: { room_id: string; log_path: string }[];
 };
 
 type Run = { out: string; err: string; code: number };
@@ -471,5 +472,113 @@ describe("共通規約", () => {
     const r = j("open", "--topic", TOPIC, "--as", "alpha");
     assert.equal(typeof r.hint, "string");
     assert.ok(r.hint!.length > 0);
+  });
+});
+
+describe("生ログへの導線", () => {
+  test("報告に移る出力は原文の場所を返す", () => {
+    const room = opened();
+    const r = j("close", room, "--as", "alpha");
+    assert.ok(r.log_path!.includes(room));
+  });
+
+  test("hint にも場所を含める", () => {
+    const room = opened();
+    const r = j("close", room, "--as", "alpha");
+    assert.ok(r.hint!.includes(r.log_path!));
+  });
+
+  test("上限で閉じた say も場所を返す", () => {
+    const room = opened(1);
+    say(room, "alpha", "ひとつめ", true);
+    const r = say(room, "beta", "ふたつめ", true);
+    assert.ok(r.log_path!.includes(room));
+  });
+
+  test("status は場所を返す", () => {
+    const room = opened();
+    assert.ok(j("status", room).log_path!.includes(room));
+  });
+
+  test("ls は各ルームの場所を返す", () => {
+    const room = opened();
+    const rooms = j("ls").rooms!;
+    assert.ok(rooms.some((r) => r.room_id === room && r.log_path.includes(room)));
+  });
+
+  test("閉じたルームへの join も場所を返す", () => {
+    const room = opened();
+    j("close", room, "--as", "alpha");
+    assert.ok(j("join", room, "--as", "beta").log_path!.includes(room));
+  });
+});
+
+describe("閉じたルームの未読", () => {
+  /** 上限に達すると最後の発言は相手にとって未読のまま残る。 */
+  const exhausted = (): string => {
+    const room = opened(1);
+    say(room, "alpha", "ひとつめ", true);
+    say(room, "beta", "ふたつめ", true);
+    return room;
+  };
+
+  test("receive は閉じていても未読を渡す", () => {
+    const room = exhausted();
+    const r = j("receive", room, "--as", "alpha");
+    assert.equal(r.status, "closed");
+    assert.equal(r.next, "report");
+    assert.deepEqual(
+      r.messages!.map((m) => m.text),
+      ["ふたつめ"],
+    );
+  });
+
+  test("渡した未読は既読になる", () => {
+    const room = exhausted();
+    j("receive", room, "--as", "alpha");
+    assert.equal(j("status", room).unread!.alpha, 0);
+  });
+
+  test("未読がなければ messages は空", () => {
+    const room = exhausted();
+    assert.deepEqual(j("receive", room, "--as", "beta").messages, []);
+  });
+});
+
+describe("終端の伝え方", () => {
+  test("上限で閉じた発言には相手が応答できないと伝える", () => {
+    const room = opened(1);
+    say(room, "alpha", "ひとつめ", true);
+    const r = say(room, "beta", "ふたつめ", true);
+    assert.match(r.hint!, /応答できません/);
+  });
+
+  test("stale で閉じた場合はその文言を出さない", () => {
+    const room = opened();
+    say(room, "alpha", "同意します", false);
+    const r = say(room, "beta", "ありがとうございます", false);
+    assert.equal(r.closed_reason, "stale");
+    assert.doesNotMatch(r.hint!, /応答できません/);
+  });
+
+  test("no_response は停止か長考かを断定しない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    let last: Reply = {} as Reply;
+    for (let i = 0; i < 7; i++) {
+      last = j("receive", room, "--timeout", "1", "--as", "alpha");
+      if (last.status === "closed") break;
+    }
+    assert.equal(last.closed_reason, "no_response");
+    assert.match(last.hint!, /区別できません/);
+    assert.ok(last.log_path!.includes(room));
+  });
+
+  test("時間切れを異常として伝えない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    const r = j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(r.status, "timeout");
+    assert.match(r.hint!, /異常ではなく/);
   });
 });

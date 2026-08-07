@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
 type Next = "say" | "receive" | "report" | "ask_user";
@@ -37,6 +37,9 @@ const roomsDir = (): string => join(homeDir(), "rooms");
 const roomDir = (id: string): string => join(roomsDir(), id);
 const roomJsonPath = (id: string): string => join(roomDir(id), "room.json");
 const messagesDir = (id: string): string => join(roomDir(id), "messages");
+
+/** 人間が原文へ辿り着くための場所。要約を経ずに突き合わせられるようにする。 */
+const logPath = (id: string): string => resolve(roomDir(id));
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -185,8 +188,16 @@ const cmdOpen = (flags: Flags): void => {
   });
 };
 
-const joinHint = (closed: boolean, unread: number, rejoined: boolean, next: Next): string => {
-  if (closed) return "このルームは閉じています。履歴を要約してユーザーに報告してください。";
+const CLOSING_HINT =
+  "合意できた点・未解決の点・持ち帰る宿題を要約してユーザーに報告してください。" +
+  "ここで出た結論は提案であり、実装はユーザーの承認を経てください。";
+
+/** 会話を終えて報告に移らせる hint。原文の場所を必ず添える。 */
+const reportHint = (id: string, head: string): string =>
+  `${head}${CLOSING_HINT}原文は ${logPath(id)} に残っています。報告にこの場所を添えてください。`;
+
+const joinHint = (id: string, closed: boolean, unread: number, rejoined: boolean, next: Next): string => {
+  if (closed) return reportHint(id, "このルームは閉じています。");
   const head = `未読 ${unread} 件。${rejoined ? "再入場です。" : "参加しました。"}`;
   return next === "say"
     ? `${head}あなたの番です。say で発言してください。`
@@ -226,14 +237,11 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     hops_left: room.max_hops - room.hops,
     messages,
     turn: room.turn,
+    log_path: logPath(id),
     next,
-    hint: joinHint(closed, messages.length, rejoined, next),
+    hint: joinHint(id, closed, messages.length, rejoined, next),
   });
 };
-
-const CLOSING_HINT =
-  "合意できた点・未解決の点・持ち帰る宿題を要約してユーザーに報告してください。" +
-  "ここで出た結論は提案であり、実装はユーザーの承認を経てください。";
 
 const cmdSay = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
@@ -257,8 +265,9 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       room_id: id,
       status: "closed",
       closed_reason: room.closed_reason,
+      log_path: logPath(id),
       next: "report",
-      hint: `このルームは閉じています。${CLOSING_HINT}`,
+      hint: reportHint(id, "このルームは閉じています。"),
     });
     return;
   }
@@ -309,11 +318,14 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       hops_left: hopsLeft,
       status: "closed",
       closed_reason: reason,
+      log_path: logPath(id),
       next: "report",
-      hint:
+      hint: reportHint(
+        id,
         reason === "hop_limit"
-          ? `往復上限に達したのでルームを閉じました。${CLOSING_HINT}`
-          : `前に進む発言が続かなかったのでルームを閉じました。${CLOSING_HINT}`,
+          ? "往復上限に達したのでルームを閉じました。この発言に相手は応答できません。"
+          : "前に進む発言が続かなかったのでルームを閉じました。",
+      ),
     });
     return;
   }
@@ -342,13 +354,26 @@ const pollOnce = (ids: string[], as: string): Record<string, unknown> | null => 
     if (!room) continue;
     sweepIdle(room);
     if (room.status === "closed") {
+      const participant = room.participants[as];
+      const messages = readMessages(id, participant?.last_read ?? 0);
+      if (participant && messages.length > 0) {
+        participant.last_read = latestSeq(id);
+        writeRoom(room);
+      }
       return {
         ok: true,
         status: "closed",
         room_id: id,
         closed_reason: room.closed_reason,
+        messages,
+        log_path: logPath(id),
         next: "report",
-        hint: `ルームは閉じています。${CLOSING_HINT}`,
+        hint: reportHint(
+          id,
+          messages.length > 0
+            ? `ルームは閉じています。未読が ${messages.length} 件あります。相手の最後の見解を読んでから要約してください。`
+            : "ルームは閉じています。",
+        ),
       };
     }
     const participant = room.participants[as];
@@ -429,8 +454,13 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
       status: "closed",
       room_id: ids[0],
       closed_reason: "no_response",
+      log_path: logPath(ids[0]),
       next: "report",
-      hint: "相手から応答がないためルームを閉じました。応答が得られなかった旨をユーザーに報告してください。",
+      hint: reportHint(
+        ids[0],
+        "待機の上限に達したためルームを閉じました。相手が停止したのか、まだ考えているのかは区別できません。" +
+          "どちらであるかを断定せず、応答が得られなかった事実として報告してください。",
+      ),
     });
     return;
   }
@@ -443,7 +473,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     retries_left: retriesLeft,
     next: "receive",
     hint:
-      `まだ応答がありません。相手が考え中の可能性が高いです（長考は珍しくありません）。` +
+      `まだ応答がありません。時間切れは異常ではなく、長文を書く相手では普通に起きます。` +
       `receive を再度呼んでください。あと ${retriesLeft} 回待てます。`,
   });
 };
@@ -489,10 +519,11 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
     unread,
     participants: Object.keys(room.participants),
     last_activity_at: room.last_activity_at,
+    log_path: logPath(id),
     next,
     hint:
       room.status === "closed"
-        ? `このルームは閉じています。${CLOSING_HINT}`
+        ? reportHint(id, "このルームは閉じています。")
         : `発言権は ${room.turn} にあります。残り ${Math.max(0, room.max_hops - room.hops)} 往復です。`,
   });
 };
@@ -510,8 +541,9 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     room_id: id,
     closed_reason: room.closed_reason,
     hops_used: room.hops,
+    log_path: logPath(id),
     next: "report",
-    hint: `ルームを閉じました。${CLOSING_HINT}`,
+    hint: reportHint(id, "ルームを閉じました。"),
   });
 };
 
@@ -537,6 +569,7 @@ const cmdLs = (): void => {
       hops_left: Math.max(0, room.max_hops - room.hops),
       unread: unreadOf(room),
       last_activity_at: room.last_activity_at,
+      log_path: logPath(room.id),
     }));
   emit({
     ok: true,
