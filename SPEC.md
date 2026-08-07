@@ -441,7 +441,7 @@ Windows の Node 24 では、型注釈を除去した `.ts` が `fs` の同期 A
 `process.exit()` は保留中の標準出力の書き込みも切り捨てるため、いずれにせよ使わない。
 
 `.ts` の直接実行は stderr に ExperimentalWarning を出力する。
-`check` の出力を hook に渡す際のノイズになるため、shebang で
+`check` の出力を hook に渡す際のノイズになるため、`bin/cxtalk` から
 `--disable-warning=ExperimentalWarning` を渡して抑止する。
 
 `package.json` は `{"type": "module"}` のみを持つ。これがないと import を含む `.ts` の

@@ -236,7 +236,7 @@ describe("say", () => {
 });
 
 describe("hops は往復で数える", () => {
-  test("一方の発言だけでは往復が減らない", () => {
+  test("最初の発言で 1 往復目に入る", () => {
     const room = opened(5);
     assert.equal(say(room, "alpha", "ひとつめ", true).hops_left, 4);
   });
