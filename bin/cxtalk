@@ -1,3 +1,8 @@
 #!/bin/bash
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# node に渡す前に Windows 形式へ直す。環境側のパス変換に頼ると
+# MSYS_NO_PATHCONV=1 を前置された場合に解決できないパスが渡る。
+if command -v cygpath > /dev/null 2>&1; then
+  root="$(cygpath -m "$root")"
+fi
 exec node --disable-warning=ExperimentalWarning "$root/src/cxtalk.ts" "$@"

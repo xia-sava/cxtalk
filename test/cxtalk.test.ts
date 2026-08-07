@@ -161,15 +161,6 @@ describe("join", () => {
     assert.equal(r.rejoined, true);
   });
 
-  test("新規参加では全件を返す", () => {
-    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
-    j("join", room, "--as", "beta");
-    say(room, "alpha", "ひとつめ", true);
-    say(room, "beta", "ふたつめ", true);
-    const r = j("join", room, "--as", "gamma");
-    assert.equal(r.messages!.length, 2);
-  });
-
   test("再入場では last_read 以降の差分だけを返す", () => {
     const room = opened();
     say(room, "alpha", "ひとつめ", true);
@@ -711,11 +702,177 @@ describe("複数ルームの待機", () => {
     const r = j("receive", opened(), opened(), "--as", "alpha");
     assert.equal(r.ok, false);
     assert.equal(r.error, "multiple_rooms");
-    assert.equal(r.next, "ask_user");
+    assert.equal(r.next, "retry");
   });
 
   test("1 つなら通常どおり動く", () => {
     assert.equal(j("receive", opened(), "--as", "alpha").status, "your_turn");
+  });
+});
+
+describe("参加者は 2 人まで", () => {
+  test("3 人目の join を断る", () => {
+    const room = opened();
+    const r = j("join", room, "--as", "gamma");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "room_full");
+    assert.deepEqual([...r.participants!].sort(), ["alpha", "beta"]);
+  });
+
+  test("断られた者は参加者に加わらない", () => {
+    const room = opened();
+    j("join", room, "--as", "gamma");
+    assert.deepEqual([...j("status", room).participants!].sort(), ["alpha", "beta"]);
+  });
+
+  test("再入場は人数に数えない", () => {
+    const room = opened();
+    assert.equal(j("join", room, "--as", "alpha").ok, true);
+    assert.equal(j("join", room, "--as", "beta").ok, true);
+  });
+});
+
+describe("読み書きは参加者に限る", () => {
+  test("参加していない名前では receive できない", () => {
+    const room = opened();
+    say(room, "alpha", "秘密の話", true);
+    const r = j("receive", room, "--as", "stranger");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "not_a_participant");
+  });
+
+  test("参加していない名前では say できない", () => {
+    const room = opened();
+    const r = j("say", room, "--text", "割り込み", "--advanced", "true", "--as", "stranger");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "not_a_participant");
+  });
+
+  test("参加していない名前では close できない", () => {
+    const room = opened();
+    const r = j("close", room, "--as", "stranger");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "not_a_participant");
+    assert.equal(j("status", room).status, "open");
+  });
+
+  test("status と ls は誰でも読める", () => {
+    const room = opened();
+    assert.equal(j("status", room, "--as", "stranger").ok, true);
+    assert.equal(j("ls").ok, true);
+  });
+});
+
+describe("参加者名の検証", () => {
+  test("数字だけの名前を断る", () => {
+    const r = j("open", "--topic", TOPIC, "--as", "123");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
+    assert.equal(r.next, "retry");
+  });
+
+  test("パス区切りを含む名前を断る", () => {
+    for (const name of ["a/b", "a\\b", "..", "a:b"]) {
+      assert.equal(j("open", "--topic", TOPIC, "--as", name).ok, false, name);
+    }
+  });
+
+  test("断られたときルームは作られない", () => {
+    j("open", "--topic", TOPIC, "--as", "123");
+    assert.deepEqual(j("ls").rooms, []);
+  });
+
+  test("普通の名前は通る", () => {
+    assert.equal(j("open", "--topic", TOPIC, "--as", "backend").ok, true);
+  });
+});
+
+describe("値の無いフラグ", () => {
+  test("末尾の --advanced を誤りとして断る", () => {
+    const room = opened();
+    const r = j("say", room, "--text", "本文", "--as", "alpha", "--advanced");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
+    assert.equal(r.next, "retry");
+  });
+
+  test("末尾の --text で本文が true にならない", () => {
+    const room = opened();
+    j("say", room, "--advanced", "true", "--as", "alpha", "--text");
+    assert.equal(j("status", room).unread!.beta, 0);
+  });
+
+  test("check では終了コード 2 に倒す", () => {
+    assert.equal(run("check", "--as").code, 2);
+  });
+});
+
+describe("発言権を seq から導く", () => {
+  test("room.json は turn と hops を持たない", () => {
+    const room = opened();
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+    assert.equal("turn" in state, false);
+    assert.equal("hops" in state, false);
+    assert.equal(state.opener, "alpha");
+  });
+
+  test("発言のたびに発言権が入れ替わる", () => {
+    const room = opened();
+    assert.equal(j("status", room).turn, "alpha");
+    say(room, "alpha", "ひとつめ", true);
+    assert.equal(j("status", room).turn, "beta");
+    say(room, "beta", "ふたつめ", true);
+    assert.equal(j("status", room).turn, "alpha");
+  });
+
+  test("メッセージだけ書かれても発言権は崩れない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    // room.json を発言前の状態に戻しても、発言権はファイル名から導かれる
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+    state.stale_streak = 0;
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+    assert.equal(j("status", room).turn, "beta");
+    assert.equal(say(room, "beta", "ふたつめ", true).ok, true);
+  });
+});
+
+describe("参加を待つ", () => {
+  test("相手が居ない間 receive は待つ", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    const r = j("receive", room, "--timeout", "1", "--as", "alice");
+    assert.equal(r.status, "timeout");
+    assert.match(r.hint!, /まだ参加していません/);
+  });
+
+  test("参加待ちのリトライは会話中と別に数える", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    j("receive", room, "--timeout", "1", "--as", "alice");
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+    assert.equal(state.participants.alice.join_timeouts, 1);
+    assert.equal(state.participants.alice.timeouts, 0);
+  });
+
+  test("相手が参加していれば待たずに返る", () => {
+    const room = opened();
+    const r = j("receive", room, "--as", "alpha");
+    assert.equal(r.status, "your_turn");
+    assert.match(r.hint!, /相手が参加しました/);
+  });
+});
+
+describe("close の理由", () => {
+  test("定義された理由だけを受ける", () => {
+    const room = opened();
+    const r = j("close", room, "--reason", "検証のため打ち切り", "--as", "alpha");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
+    assert.equal(j("status", room).status, "open");
+  });
+
+  test("manual は通る", () => {
+    const room = opened();
+    assert.equal(j("close", room, "--reason", "manual", "--as", "alpha").closed_reason, "manual");
   });
 });
 
