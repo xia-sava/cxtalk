@@ -76,12 +76,20 @@ BE                     cxtalk                     FE
 
 | 振る舞い | フィールド | 判定 |
 |---|---|---|
-| 会話が終わらない問題 | `hops` / `max_hops` | `say` のたび +1、上限で close |
-| 中身のない応酬の検知 | `stale_streak` | `advanced: false` で +1、2 で close |
+| 会話が終わらない問題 | `hops` / `max_hops` | 往復のたび +1、上限で close |
+| 中身のない応酬の検知 | `stale_streak` | `advanced: false` で +1、`true` で 0 に戻す。2 で close |
 | 双方が待ち合うデッドロック | `turn` | 自分の番なら `receive` は即座に返る |
 | 応答が来ない | `participants[].timeouts` | `receive` タイムアウトで +1、上限で close |
 | 放置されたルームの掃除 | `last_activity_at` | 30 分無音で close |
 | 再入場時の差分取得 | `participants[].last_read` | これ以降のメッセージを返す |
+
+### hops は往復で数える
+
+`hops` は往復の回数であり、発言の回数ではない。両者が 1 回ずつ発言して 1 往復とする。
+`say` はメッセージの通し番号 `seq` を進め、`hops` は `Math.ceil(seq / 2)` で求める。
+`hops_left` は `max_hops - hops`。
+
+`max_hops` の既定値 5 は、各参加者が 5 回まで発言できることを意味する。
 
 ### turn が二重に効く
 
@@ -123,7 +131,7 @@ cxtalk receive <room_id>... [--timeout 100] [--as <name>]
 cxtalk status <room_id>
 cxtalk close  <room_id> [--reason manual]
 cxtalk ls
-cxtalk check  --as <name> [--room <room_id>]
+cxtalk check  [--as <name>] [--room <room_id>]
 ```
 
 `check` 以外は JSON を stdout に出力する。
@@ -304,6 +312,9 @@ room_id は複数受ける。初期実装では 1 個しか渡さないが、
 100 秒であれば呼び出し側で何も指定しなくても既定値の内側に収まる。
 長考への追随は 1 回の待機時間ではなくリトライ回数で確保する。
 
+リトライ上限は 6 回とする。100 秒の待機と合わせて、応答を待つ時間は最大でおよそ 10 分になる。
+上限に達した場合は `no_response` として close する。
+
 ---
 
 ### status
@@ -382,8 +393,13 @@ stdout の 1 行はそのまま hook の `reason` に流せる形式にする。
   → 再入場して会話を続ける
 ```
 
-block する条件は **open ∧ 自分の turn ∧ 未読あり** の 3 つすべて。
-閉じたルームで block すると抜けられなくなる。
+block する条件は **open ∧ 自分の turn ∧ 未読あり ∧ `stop_hook_active` が false** の
+4 つすべて。閉じたルームで block すると抜けられなくなる。
+
+`stop_hook_active` は Stop hook の入力に含まれ、block によって継続したターンで true になる。
+Claude Code は連続した block を検知しないため、hook 側でこれを見ない限り止まらない。
+このフラグは人間の入力ごとに false へ戻るため、条件に加えることで
+block は入力 1 回につき最大 1 回に制限される。
 
 block 時の表示には残り往復数を含める。人間が画面を見ていれば中断できる状態にする。
 
@@ -410,11 +426,17 @@ block 時の表示には残り往復数を含める。人間が画面を見て�
 | 実行 | Node 24 の type stripping により、ビルドせず `.ts` を直接実行 |
 | 依存 | なし（標準ライブラリのみ。`node_modules` を持たない） |
 | 構成 | 1 ファイル |
-| 呼び出し | Claude Code からは Bash 経由。hook からは直接実行 |
+| 呼び出し | Bash ツールの `PATH` から `cxtalk` として実行。hook からも同じ |
 
 型注釈を除去して実行する方式のため、ランタイム挙動を伴う構文（`enum` / `namespace` /
 パラメータプロパティ）は使えない。union type と const オブジェクトで代用する。
 型検査は実行時には行われないため、エディタまたは別途の `tsc` に委ねる。
+
+終了コードは `process.exitCode` への代入で設定し、`process.exit()` は呼ばない。
+Windows の Node 24 では、型注釈を除去した `.ts` が `fs` の同期 API と `process.exit()` を
+併用するとプロセスが libuv のアサーション失敗で異常終了し、終了コードが 127 になる。
+`check` は終了コードで結果を表すため、これを踏むと判定が成立しない。
+`process.exit()` は保留中の標準出力の書き込みも切り捨てるため、いずれにせよ使わない。
 
 `.ts` の直接実行は stderr に ExperimentalWarning を出力する。
 `check` の出力を hook に渡す際のノイズになるため、shebang で
@@ -422,7 +444,8 @@ block 時の表示には残り往復数を含める。人間が画面を見て�
 
 ### 呼び出しの前提
 
-Claude Code から Bash 経由で実行するため、**実行許可を settings に登録する**必要がある。
+`bin/` に置いたものはプラグインが有効な間 Bash ツールの `PATH` に加わるため、
+`cxtalk` の名前で呼べる。ただし**実行許可を settings に登録する**必要がある。
 登録がないと往復のたびに許可を求められ、自走が成立しない。
 
 ## skill との分担
@@ -432,17 +455,43 @@ Claude Code から Bash 経由で実行するため、**実行許可を settings
 | コマンド | 機構。メッセージの保存・待機・カウント。決定論的な部分 |
 | SKILL.md | 作法。いつ開くか、何を載せるか、どう閉じるか。判断を要する部分 |
 
-SKILL.md とコマンド本体はユーザーレベル（`~/.claude/skills/`）に置く。
+SKILL.md とコマンド本体は同じプラグインに同梱する。
 repo ごとに複製すると片方だけが更新され食い違うため。
+
+## プラグインとしての構成
+
+Claude Code のプラグインとして構成する。skill・hook・実行ファイルの置き場所が
+仕様として定まっており、配置とパス解決を自前で用意せずに済む。
+
+```
+.claude-plugin/plugin.json
+bin/cxtalk
+src/cxtalk.ts
+skills/cxtalk/SKILL.md
+hooks/hooks.json
+hooks/stop.sh
+```
+
+| 置き場所 | 役割 |
+|---|---|
+| `bin/` | プラグインが有効な間、Bash ツールの `PATH` に加わる |
+| `skills/cxtalk/SKILL.md` | 作法 |
+| `hooks/hooks.json` | Stop hook の登録。利用者が settings を編集せずに済む |
+
+`bin/cxtalk` は `src/cxtalk.ts` を起動するラッパーとする。
+型注釈の除去は拡張子で判定されるため、拡張子を持たない `bin/cxtalk` に実装を直接は置けない。
+
+### 配置
+
+`~/.claude/skills/cxtalk` を本 repo への symlink とする。
+`.claude-plugin/plugin.json` を持つディレクトリはプラグインとして読まれ、
+プラグインキャッシュに複製されずその場で参照されるため、repo が唯一の正になる。
+marketplace への登録も install も要さず、次のセッションから `cxtalk@skills-dir` として読まれる。
+
+開発中は `claude --plugin-dir <path>` で読み込み、`claude plugin validate <path>` で検証する。
 
 ## 初期実装に含めないもの
 
 - **発言の繰り返し検知**（類似度計算による堂々巡りの検出）。実装量に対して閾値調整の見通しが立たない。
   `max_hops` と `stale_streak` で実際にどこまで止まるかを見てから判断する
 - **3 者以上のルーム**。`receive` が複数の room_id を受ける形にしておくに留める
-
-## 未決事項
-
-- `receive` のリトライ上限（`--timeout 100` に対し 6 回＝10 分を想定）
-- アイドルタイムアウトの値（30 分を想定）
-- `~/.claude/skills/` への配置手段（コピーか symlink か）

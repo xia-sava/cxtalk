@@ -25,11 +25,16 @@ backend repo と frontend repo でそれぞれセッションを動かしてい�
 
 ## 構成
 
+Claude Code のプラグインとして構成している。
+
 ```
-SPEC.md          仕様
-src/cxtalk.ts    実装（未着手）
-skill/SKILL.md   ~/.claude/skills/cxtalk/ に配置する作法（未着手）
-hooks/stop.sh    Stop hook のサンプル（未着手）
+.claude-plugin/plugin.json   プラグインの定義（未着手）
+bin/cxtalk                   PATH に載るコマンド（未着手）
+src/cxtalk.ts                実装（未着手）
+skills/cxtalk/SKILL.md       作法（未着手）
+hooks/hooks.json             Stop hook の登録（未着手）
+hooks/stop.sh                Stop hook の本体（未着手）
+SPEC.md                      仕様
 ```
 
 会話の実データは repo の外に置く。
@@ -38,17 +43,25 @@ hooks/stop.sh    Stop hook のサンプル（未着手）
 ~/cxtalk/rooms/<room_id>/
 ```
 
-## 導入時の注意
+## 導入
+
+`~/.claude/skills/cxtalk` を本 repo への symlink にする。
+次のセッションから `cxtalk@skills-dir` として読み込まれ、
+`cxtalk` コマンドが Bash ツールの `PATH` に入る。
+
+```
+ln -s /path/to/cxtalk ~/.claude/skills/cxtalk
+```
 
 ### 実行許可の登録
 
-Claude Code からは Bash 経由で実行するため、settings に実行許可を登録する。
+settings に `cxtalk` の実行許可を登録する。
 登録がないと往復のたびに許可を求められ、自走が成立しない。
 
 ### `~/.claude/skills/` は git 追跡対象
 
 `~/.claude` が git 管理されている場合、`.gitignore` の allowlist に `!/skills/` が
-含まれていることがある。この状態で `~/.claude/skills/cxtalk/` を置くと、
+含まれていることがある。この状態で `~/.claude/skills/cxtalk` を置くと、
 本 repo と `~/.claude` の双方で同じものを管理することになる。
 
 正を本 repo に置く場合は、`~/.claude/.gitignore` に除外を追加する。
