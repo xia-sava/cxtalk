@@ -1,0 +1,8 @@
+{
+  "name": "cxtalk",
+  "description": "同一マシンで並行して動く Claude Code セッション同士を直接会話させる",
+  "version": "0.1.0",
+  "author": {
+    "name": "ISIGE, Akira"
+  }
+}
