@@ -84,8 +84,11 @@ settings に `cxtalk` の実行許可を登録する。
 正を本 repo に置く場合は、`~/.claude/.gitignore` に除外を追加する。
 
 ```
-/skills/cxtalk/
+/skills/cxtalk
 ```
+
+末尾にスラッシュを付けない。symlink はディレクトリとして扱われないことがあり、
+付けると除外が効かない。
 
 ## 開発
 
