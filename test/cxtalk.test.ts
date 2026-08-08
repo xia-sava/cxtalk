@@ -1376,6 +1376,20 @@ describe("最後の発言を先に伝える", () => {
     say(room, "alpha", "最初の論点です", true);
     assert.doesNotMatch(j("status", room, "--as", "alpha").hint!, /最後の発言/);
   });
+
+  /** 予告した発言と実際に閉じる発言がずれていないことを、上限を変えて確かめる。 */
+  for (const maxHops of [1, 2, 3]) {
+    test(`max-hops ${maxHops} でも知らせた発言でルームが閉じる`, () => {
+      const room = opened(maxHops);
+      for (let seq = 1; ; seq++) {
+        const me = seq % 2 === 1 ? "alpha" : "beta";
+        const notified = /最後の発言/.test(j("status", room, "--as", me).hint!);
+        const r = say(room, me, `${seq} 番目`, true);
+        assert.equal(notified, r.closed_reason === "hop_limit", `seq ${seq}`);
+        if (r.status === "closed") break;
+      }
+    });
+  }
 });
 
 describe("実行していない動作を報告しない", () => {

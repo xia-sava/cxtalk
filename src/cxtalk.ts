@@ -630,8 +630,13 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   room.last_activity_at = nowIso();
   const hopsLeft = hopsLeftOf(room, seq);
 
-  const reason: ClosedReason | null =
-    seq >= room.max_hops * 2 ? "hop_limit" : room.stale_streak >= 2 ? "stale" : null;
+  // 上限は予告と同じ関数で判定する。式を分けると、予告なく閉じたり、
+  // 最後ではない発言に最後だと告げたりする形で静かにずれる。
+  const reason: ClosedReason | null = isFinalTurn(room, current)
+    ? "hop_limit"
+    : room.stale_streak >= 2
+      ? "stale"
+      : null;
 
   if (reason) {
     closeRoom(room, reason);
