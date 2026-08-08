@@ -2075,11 +2075,28 @@ describe("Stop hook", () => {
     assert.equal(stopHook(active(false), "alpha").err, "");
   });
 
-  // 入力を読み取れないときは止める側に倒れる。stop_hook_active を読み落としたまま
-  // 止め続けると会話から抜けられなくなるため、入力の形が変わったときの被害が大きい。
-  test("読めない入力でも未読があれば止める", () => {
+  // 判断できないときは止めない側へ倒す。止め続けると会話から抜けられなくなる。
+  test("読めない入力では止めない", () => {
     unreadForBeta();
-    assert.equal(stopHook("入力ではない", "beta").code, 2);
-    assert.equal(stopHook("", "beta").code, 2);
+    assert.equal(stopHook("入力ではない", "beta").code, 0);
+    assert.equal(stopHook("", "beta").code, 0);
+  });
+
+  // 値として読む。文字列の一致で判断すると、本文に同じ字面があるだけで空振りする。
+  test("本文に同じ字面があっても判定を変えない", () => {
+    const room = unreadForBeta();
+    const input = JSON.stringify({
+      stop_hook_active: false,
+      last_assistant_message: '"stop_hook_active": true と書いた',
+    });
+    const r = stopHook(input, "beta");
+    assert.equal(r.code, 2);
+    assert.match(r.err, new RegExp(room));
+  });
+
+  test("入れ子の中の同じキーに引きずられない", () => {
+    unreadForBeta();
+    const input = JSON.stringify({ stop_hook_active: false, nested: { stop_hook_active: true } });
+    assert.equal(stopHook(input, "beta").code, 2);
   });
 });

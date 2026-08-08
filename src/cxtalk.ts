@@ -56,7 +56,7 @@ const KNOWN_FLAGS: Record<string, readonly string[]> = {
   status: ["as"],
   close: ["reason", "as"],
   ls: [],
-  check: ["as", "room"],
+  check: ["as", "room", "hook"],
 };
 
 const COMMANDS = Object.keys(KNOWN_FLAGS);
@@ -1158,10 +1158,37 @@ const cmdLs = (): void => {
 };
 
 /**
+ * Stop hook が渡す JSON から、自分が起こしたターンかどうかを読む。
+ * 解釈は bash ではなくここで行う。呼ぶ側に JSON を読ませると、
+ * 綴りの揺れで判定が空振りしたとき、止め続ける側へ黙って倒れる。
+ */
+const stopHookActive = (): boolean | null => {
+  try {
+    const input = JSON.parse(readFileSync(0, "utf8")) as Record<string, unknown>;
+    return input.stop_hook_active === true;
+  } catch {
+    return null;
+  }
+};
+
+/**
  * 用があれば 0、無ければ 1、状態を読めなければ 2 を返す。
  * 読めないファイルで恒久的に block されると復帰できないため、異常は安全側に倒す。
  */
 const cmdCheck = (flags: Flags): void => {
+  if (flags.hook === "true") {
+    const active = stopHookActive();
+    // 判断できないときは止めない側へ倒す。止め続けると会話から抜けられなくなる。
+    if (active === null) {
+      process.exitCode = 2;
+      return;
+    }
+    // 自分が起こしたターンで再び止めると、同じ判定が延々と続く。
+    if (active) {
+      process.exitCode = 1;
+      return;
+    }
+  }
   const as = selfName(flags);
   if (!isValidName(as)) {
     process.exitCode = 2;
