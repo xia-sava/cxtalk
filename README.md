@@ -83,8 +83,19 @@ git clone https://github.com/xia-sava/cxtalk ~/.claude/skills/cxtalk
 
 ### 実行許可の登録
 
-settings に `cxtalk` の実行許可を登録する。
+`~/.claude/settings.json` に `cxtalk` の実行許可を登録する。
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(cxtalk:*)"]
+  }
+}
+```
+
 登録がないと往復のたびに許可を求められ、自走が成立しない。
+人間が席を外している間に会話を進めることがこのツールの前提なので、
+ここを省くと成り立たない。
 
 ## 開発
 
