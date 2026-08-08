@@ -5,7 +5,13 @@ import { randomBytes } from "node:crypto";
 
 type Next = "say" | "receive" | "report" | "ask_user" | "retry";
 type RoomStatus = "open" | "closed";
-type ClosedReason = "hop_limit" | "stale" | "no_response" | "idle" | "manual";
+
+/** 書ける理由と受け入れる理由を 1 箇所で決める。分けると自分が書いた値を読めなくなる。 */
+const CLOSED_REASONS = ["hop_limit", "stale", "no_response", "idle", "manual"] as const;
+type ClosedReason = (typeof CLOSED_REASONS)[number];
+
+const isClosedReason = (value: unknown): value is ClosedReason =>
+  (CLOSED_REASONS as readonly unknown[]).includes(value);
 
 type Participant = { last_read: number; timeouts: number; join_timeouts: number };
 
@@ -32,14 +38,6 @@ const IDLE_MINUTES = 30;
 const POLL_INTERVAL_MS = 200;
 const MAX_PARTICIPANTS = 2;
 const NAME_MAX_LENGTH = 64;
-
-const CLOSED_REASONS: readonly string[] = [
-  "hop_limit",
-  "stale",
-  "no_response",
-  "idle",
-  "manual",
-];
 
 /** コマンドごとに受け付けるフラグ。打ち間違いを既定値として飲み込まないために持つ。 */
 const KNOWN_FLAGS: Record<string, readonly string[]> = {
@@ -165,7 +163,7 @@ const readRoom = (id: string): Room | null => {
   }
   // 閉じた理由は報告にそのまま乗る。開閉と食い違うと、閉じた会話が理由なしで報告される。
   if (room.status === "closed") {
-    if (!CLOSED_REASONS.includes(room.closed_reason as string)) {
+    if (!isClosedReason(room.closed_reason)) {
       throw invalidState(
         `閉じたルームの closed_reason が ${CLOSED_REASONS.join(" / ")} のいずれでもありません。`,
       );
@@ -991,7 +989,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     return;
   }
   const reason = flags.reason ?? "manual";
-  if (!CLOSED_REASONS.includes(reason)) {
+  if (!isClosedReason(reason)) {
     invalidArgument(
       `--reason には ${CLOSED_REASONS.join(" / ")} のいずれかを指定してください。` +
         `${reason} は解釈できません。`,
@@ -1000,7 +998,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     return;
   }
   const alreadyClosed = room.status === "closed";
-  closeRoom(room, reason as ClosedReason);
+  closeRoom(room, reason);
   const messages = drainUnread(room, room.participants[as], as);
   emit({
     ok: true,

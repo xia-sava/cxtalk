@@ -3,16 +3,25 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "cxtalk.ts");
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const CLI = join(ROOT, "src", "cxtalk.ts");
+const BIN_DIR = join(ROOT, "bin");
+const HOOK = join(ROOT, "hooks", "stop.sh");
 
 type Message = { seq: number; from: string; at: string; text: string };
 
+/** SPEC が定める next の全体。示せる行動が増えたらここだけが増える。 */
+const NEXT_VALUES = ["say", "receive", "report", "ask_user", "retry"] as const;
+
+/** SPEC が定める閉じ方。実装とは別に書き、片方だけ増えたときに落ちるようにする。 */
+const CLOSED_REASONS = ["hop_limit", "stale", "no_response", "idle", "manual"] as const;
+
 type Reply = {
   ok: boolean;
-  next?: "say" | "receive" | "report" | "ask_user" | "retry";
+  next?: (typeof NEXT_VALUES)[number];
   hint?: string;
   error?: string;
   room_id?: string;
@@ -73,6 +82,37 @@ const run = (...args: string[]): Run => {
 
 const j = (...args: string[]): Reply => JSON.parse(run(...args).out);
 
+/** bash が無ければ入口も hook も成立しない。値の食い違いとして報告されないようにする。 */
+const viaBash = (args: string[], options: Record<string, unknown>): Run => {
+  const r = spawnSync("bash", args, { encoding: "utf8", ...options });
+  if (r.error) throw new Error(`bash を起動できません: ${r.error.message}`);
+  return { out: r.stdout ?? "", err: r.stderr ?? "", code: r.status ?? -1 };
+};
+
+/** 利用者が叩く入口。src を直接起動する run() では通らない。 */
+const bin = (...args: string[]): Run =>
+  viaBash([join(BIN_DIR, "cxtalk"), ...args], {
+    env: { ...process.env, CXTALK_HOME: home },
+  });
+
+/**
+ * Stop hook を、Claude Code がするのと同じく標準入力の JSON で起動する。
+ * 名乗りは作業ディレクトリから決まるため、参加者名のディレクトリを cwd に渡す。
+ */
+const stopHook = (input: string, as: string): Run => {
+  const cwd = join(home, as);
+  mkdirSync(cwd, { recursive: true });
+  return viaBash([HOOK], {
+    input,
+    cwd,
+    env: {
+      ...process.env,
+      CXTALK_HOME: home,
+      PATH: `${BIN_DIR}${delimiter}${process.env.PATH ?? ""}`,
+    },
+  });
+};
+
 const TOPIC = "確認テストの合格基準は正答数か正答率か";
 
 /** alpha がルームを開き、beta が参加した状態を作る。 */
@@ -100,12 +140,15 @@ const dropLastRead = (room: string, name: string): void => {
   writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
 };
 
-/** 最終更新を十分に古くして、掃除の対象にする。 */
-const makeStale = (room: string): void => {
+/** 最終更新を指定した分だけ過去にする。掃除の境界を跨がせるために分で指定する。 */
+const idleFor = (room: string, minutes: number): void => {
   const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
-  state.last_activity_at = "2000-01-01T00:00:00+09:00";
+  state.last_activity_at = new Date(Date.now() - minutes * 60 * 1000).toISOString();
   writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
 };
+
+/** 最終更新を十分に古くして、掃除の対象にする。 */
+const makeStale = (room: string): void => idleFor(room, 60);
 
 describe("open", () => {
   test("room_id と自分の名前を返す", () => {
@@ -346,6 +389,17 @@ describe("receive", () => {
     assert.equal(r.retries_left, 5);
   });
 
+  // 既定値は時間切れの出力にしか現れないため、確かめるには実際に待つしかない。
+  // 呼び出し側の Bash 実行の既定（120 秒）を超えると、外から打ち切られて
+  // 原因の分からない失敗になる。この 1 件だけがその関係を固定している。
+  test("既定の待機は呼び出し側の制限の内側に収まる", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    const r = j("receive", room, "--as", "alpha");
+    assert.equal(r.status, "timeout");
+    assert.ok(r.waited_seconds! < 120, `既定の待機が ${r.waited_seconds} 秒になっている`);
+  });
+
   test("リトライを使い切ったら no_response で close", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
@@ -372,7 +426,7 @@ describe("receive", () => {
 describe("status", () => {
   // 呼び出した本人の名前で確かめる。参加していない名前では、
   // 既読にする不具合が入っても last_read が無いため常に通ってしまう。
-  test("副作用を持たず last_read を更新しない", () => {
+  test("既読にせず last_read を更新しない", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
     j("status", room, "--as", "beta");
@@ -514,9 +568,12 @@ describe("共通規約", () => {
       say(room, "alpha", "ひとつめ", true),
       j("receive", room, "--as", "beta"),
       j("close", room, "--as", "alpha"),
+      j("open", "--topic", TOPIC, "--max-hops", "0", "--as", "alpha"),
+      j("join", "--as", "beta"),
+      j("say", room, "--text", "ふたつめ", "--advanced", "--as", "alpha"),
     ]) {
       assert.equal(typeof r.ok, "boolean");
-      assert.ok(["say", "receive", "report", "ask_user"].includes(r.next!));
+      assert.ok(NEXT_VALUES.includes(r.next!));
     }
   });
 
@@ -999,6 +1056,15 @@ describe("close の理由", () => {
     const room = opened();
     assert.equal(j("close", room, "--reason", "manual", "--as", "alpha").closed_reason, "manual");
   });
+
+  // 書ける理由と読める理由がずれると、自分で書いた room.json を壊れたものとして断る。
+  for (const reason of CLOSED_REASONS) {
+    test(`${reason} で閉じたルームを読み直せる`, () => {
+      const room = opened();
+      assert.equal(j("close", room, "--reason", reason, "--as", "alpha").closed_reason, reason);
+      assert.equal(j("status", room, "--as", "alpha").ok, true);
+    });
+  }
 });
 
 describe("アイドルの掃除", () => {
@@ -1026,6 +1092,19 @@ describe("アイドルの掃除", () => {
   test("新しいルームは掃除されない", () => {
     const room = opened();
     assert.equal(j("join", room, "--as", "alpha").status, "open");
+  });
+
+  // 席を外した人間が戻ったときに、閉じた理由が案内と食い違わないようにする。
+  test("29 分の無音では閉じない", () => {
+    const room = opened();
+    idleFor(room, 29);
+    assert.equal(j("join", room, "--as", "alpha").status, "open");
+  });
+
+  test("31 分の無音で閉じる", () => {
+    const room = opened();
+    idleFor(room, 31);
+    assert.equal(j("join", room, "--as", "alpha").status, "closed");
   });
 
   test("status も掃除の対象にする", () => {
@@ -1226,36 +1305,58 @@ describe("状態ファイルの値", () => {
     return room;
   };
 
-  /** こちらで決め直すと歯止めや発言権が黙って変わる値。欠けていても書き間違いでも断る。 */
-  const rejected: [string, (state: EditableRoom) => void][] = [
-    ["max_hops が整数でない", (s) => void (s.max_hops = "5往復")],
-    ["max_hops が欠けている", (s) => void delete s.max_hops],
-    ["opener が欠けている", (s) => void delete s.opener],
-    ["opener が参加者にいない", (s) => void (s.opener = "zzz")],
-    ["status が open でも closed でもない", (s) => void (s.status = "paused")],
-    ["last_activity_at が欠けている", (s) => void delete s.last_activity_at],
-    ["last_activity_at が日時として読めない", (s) => void (s.last_activity_at = "きのう")],
-    ["last_activity_at が文字列でない", (s) => void (s.last_activity_at = 0 as never)],
-    ["開いたルームに closed_reason がある", (s) => void (s.closed_reason = "manual")],
-    ["participants が配列", (s) => void ((s as Record<string, unknown>).participants = [])],
-    ["id がディレクトリ名と違う", (s) => void (s.id = "r-0000")],
-    ["last_read が整数でない", (s) => void (s.participants.alpha.last_read = "3")],
+  /**
+   * こちらで決め直すと歯止めや発言権が黙って変わる値。欠けていても書き間違いでも断る。
+   * 第 3 要素は hint が名指しすべき箇所。人間はこれを頼りに room.json を直すため、
+   * 別の検査が先に拾って別の場所を告げると、正しく直しても直らない。
+   */
+  const rejected: [string, (state: EditableRoom) => void, RegExp][] = [
+    ["max_hops が整数でない", (s) => void (s.max_hops = "5往復"), /max_hops/],
+    ["max_hops が欠けている", (s) => void delete s.max_hops, /max_hops/],
+    ["opener が欠けている", (s) => void delete s.opener, /opener/],
+    ["opener が参加者にいない", (s) => void (s.opener = "zzz"), /opener/],
+    ["status が open でも closed でもない", (s) => void (s.status = "paused"), /status/],
+    ["last_activity_at が欠けている", (s) => void delete s.last_activity_at, /last_activity_at/],
+    [
+      "last_activity_at が日時として読めない",
+      (s) => void (s.last_activity_at = "きのう"),
+      /last_activity_at/,
+    ],
+    [
+      "last_activity_at が文字列でない",
+      (s) => void (s.last_activity_at = 0 as never),
+      /last_activity_at/,
+    ],
+    ["開いたルームに closed_reason がある", (s) => void (s.closed_reason = "manual"), /closed_reason/],
+    [
+      "participants が配列",
+      (s) => void ((s as Record<string, unknown>).participants = []),
+      /participants/,
+    ],
+    ["id がディレクトリ名と違う", (s) => void (s.id = "r-0000"), /id がディレクトリ名/],
+    ["last_read が整数でない", (s) => void (s.participants.alpha.last_read = "3"), /last_read/],
     [
       "参加者の状態が object でない",
       (s) => void ((s.participants as Record<string, unknown>).alpha = 3),
+      /alpha の状態/,
     ],
   ];
 
-  for (const [label, patch] of rejected) {
+  for (const [label, patch, reason] of rejected) {
     test(`${label} なら読み取れないものとして扱う`, () => {
       const r = j("status", patched(patch), "--as", "alpha");
       assert.equal(r.ok, false);
       assert.equal(r.error, "corrupt_room");
       assert.equal(r.next, "ask_user");
     });
+
+    test(`${label} なら hint がその箇所を名指しする`, () => {
+      assert.match(j("status", patched(patch), "--as", "alpha").hint!, reason);
+    });
   }
 
-  test("断る理由を hint に書く", () => {
+  // 名指しだけでは直せない。満たすべき条件まで書けているかを 1 件で確かめる。
+  test("hint は値の名前だけでなく満たすべき条件も書く", () => {
     const room = patched((s) => void (s.max_hops = "5往復"));
     assert.match(j("status", room, "--as", "alpha").hint!, /max_hops が 1 以上の整数ではありません/);
   });
@@ -1675,5 +1776,69 @@ describe("上限に達する発言が未読を捨てない", () => {
     const r = say(room, "beta", "読んでから応答します", true);
     assert.equal(r.messages!.length, 0);
     assert.doesNotMatch(r.hint!, /未読/);
+  });
+});
+
+describe("利用者が叩く入口", () => {
+  test("bin 経由でも JSON を返す", () => {
+    assert.equal(JSON.parse(bin("ls").out).ok, true);
+  });
+
+  test("bin 経由なら警告を標準エラーに出さない", () => {
+    assert.equal(bin("ls").err, "");
+  });
+
+  test("引数をそのまま実装へ渡す", () => {
+    const r = JSON.parse(bin("open", "--topic", TOPIC, "--as", "alpha").out);
+    assert.equal(r.topic, TOPIC);
+    assert.equal(r.as, "alpha");
+  });
+});
+
+describe("Stop hook", () => {
+  const active = (value: boolean): string =>
+    JSON.stringify({ session_id: "s-1", stop_hook_active: value });
+
+  /** beta に未読がある状態を作る。hook は名乗りを作業ディレクトリから決める。 */
+  const unreadForBeta = (): string => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    return room;
+  };
+
+  test("未読があればターンの終了を止める", () => {
+    const room = unreadForBeta();
+    const r = stopHook(active(false), "beta");
+    assert.equal(r.code, 2);
+    assert.match(r.err, new RegExp(room));
+  });
+
+  test("未読がなければ止めない", () => {
+    opened();
+    assert.equal(stopHook(active(false), "beta").code, 0);
+  });
+
+  test("相手の番なら止めない", () => {
+    unreadForBeta();
+    assert.equal(stopHook(active(false), "alpha").code, 0);
+  });
+
+  // これが効かないと、止めた先で再び止まり続けて会話から抜けられなくなる。
+  test("hook 自身が起こしたターンでは止めない", () => {
+    unreadForBeta();
+    assert.equal(stopHook(active(true), "beta").code, 0);
+  });
+
+  test("止めるときだけ標準エラーに理由を出す", () => {
+    unreadForBeta();
+    assert.equal(stopHook(active(false), "alpha").err, "");
+  });
+
+  // 入力を読み取れないときは止める側に倒れる。stop_hook_active を読み落としたまま
+  // 止め続けると会話から抜けられなくなるため、入力の形が変わったときの被害が大きい。
+  test("読めない入力でも未読があれば止める", () => {
+    unreadForBeta();
+    assert.equal(stopHook("入力ではない", "beta").code, 2);
+    assert.equal(stopHook("", "beta").code, 2);
   });
 });
