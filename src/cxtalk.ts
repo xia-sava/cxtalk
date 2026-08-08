@@ -300,6 +300,9 @@ const rejectInvalidName = (name: string): boolean => {
 };
 
 const closeRoom = (room: Room, reason: ClosedReason): void => {
+  // 既に閉じているルームの理由は残す。後から閉じにきた側の理由で上書きすると、
+  // 話し切った会話に応答が無かったという記録が付く。
+  if (room.status === "closed") return;
   room.status = "closed";
   room.closed_reason = reason;
   room.last_activity_at = nowIso();
@@ -774,19 +777,19 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     await sleep(POLL_INTERVAL_MS);
   }
 
-  // 最後の待機と時間切れの処理の間にも相手は動く。ここで見ないと、
-  // 届いた発言も閉じられたルームも、応答が無かったという記録に変わる。
-  const settled = pollOnce(id, as);
-  if (settled) {
-    emit(settled);
-    return;
-  }
-
   const room = loadRoom(id);
   if (!room) return;
   const participant = room.participants[as];
   if (!participant) {
     notAParticipant(id, as, room);
+    return;
+  }
+
+  // 待つ間に閉じられていることがある。ここで見るのは、これから閉じにいく room そのもの。
+  // 別に読んだ状態で判定すると、他人が閉じた理由を上書きしたうえで、
+  // 応答が無かったという記録に変えることになる。
+  if (room.status === "closed") {
+    emit(closedReply(room, participant, as));
     return;
   }
 
@@ -804,7 +807,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
       ok: true,
       status: "closed",
       room_id: id,
-      closed_reason: "no_response",
+      closed_reason: room.closed_reason,
       log_path: logPath(id),
       next: "report",
       // 相手が一度も参加していなければ発言も無い。起きていない会話に要約を求めない。
@@ -913,7 +916,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     return;
   }
   const alreadyClosed = room.status === "closed";
-  if (!alreadyClosed) closeRoom(room, reason as ClosedReason);
+  closeRoom(room, reason as ClosedReason);
   const messages = drainUnread(room, room.participants[as], as);
   emit({
     ok: true,
