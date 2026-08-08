@@ -346,15 +346,17 @@ const notAParticipantHint = (as: string, room: Room): string => {
   );
 };
 
+const notAParticipantReply = (id: string, as: string, room: Room): Record<string, unknown> => ({
+  ok: false,
+  error: "not_a_participant",
+  room_id: id,
+  participants: Object.keys(room.participants),
+  next: "ask_user",
+  hint: notAParticipantHint(as, room),
+});
+
 const notAParticipant = (id: string, as: string, room: Room): void => {
-  emit({
-    ok: false,
-    error: "not_a_participant",
-    room_id: id,
-    participants: Object.keys(room.participants),
-    next: "ask_user",
-    hint: notAParticipantHint(as, room),
-  });
+  emit(notAParticipantReply(id, as, room));
 };
 
 const corruptRoom = (id: string): void => {
@@ -482,11 +484,12 @@ const joinHint = (
   unread: number,
   rejoined: boolean,
   next: Next,
-  alone: boolean,
 ): string => {
   if (room.status === "closed") return closedHint(room.id, unread, "このルームは閉じています。");
   const head = `未読 ${unread} 件。${rejoined ? "再入場です。" : "参加しました。"}`;
-  if (alone) return `${head}相手はまだ参加していません。receive を呼べば参加を待てます。`;
+  if (!bothJoined(room)) {
+    return `${head}相手はまだ参加していません。receive を呼べば参加を待てます。`;
+  }
   return next === "say"
     ? sayHint(room, seq, `${head}あなたの番です。say で発言してください。`)
     : `${head}相手の発言を receive で待ってください。`;
@@ -523,7 +526,6 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   if (room.status === "open") room.last_activity_at = nowIso();
   writeRoom(room);
   const turn = turnOf(room, seq);
-  const alone = !bothJoined(room);
   const next = nextOf(room, as, seq);
   emit({
     ok: true,
@@ -537,7 +539,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     turn,
     log_path: logPath(id),
     next,
-    hint: joinHint(room, seq, messages.length, rejoined, next, alone),
+    hint: joinHint(room, seq, messages.length, rejoined, next),
   });
 };
 
@@ -684,8 +686,9 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   if (!room) return null;
   sweepIdle(room);
   const participant = room.participants[as];
-  // 参加を確かめてから呼ばれる。一度 join すれば close まで参加者なので、ここで欠けることはない。
-  if (!participant) return null;
+  // 入口で確かめた後に呼ばれる。それでも欠けていたときに黙って待つと、
+  // 待機の上限まで進んだ末に、応答が無かったという記録だけが残る。
+  if (!participant) return notAParticipantReply(id, as, room);
   const seq = latestSeq(id);
 
   if (room.status === "closed") return closedReply(room, participant, as);
