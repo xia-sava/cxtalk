@@ -19,9 +19,16 @@ backend repo と frontend repo でそれぞれセッションを動かしてい�
 
 詳細は [SPEC.md](SPEC.md) を参照。
 
-## 状態
+## 要件
 
-コマンド・テスト・skill が揃っている。
+- Node.js 24 以上。型注釈を含む `.ts` をそのまま実行する
+- bash。コマンドと Stop hook が bash スクリプトである
+- Claude Code
+
+依存パッケージは無い。ビルドも要らない。
+
+動作を確認しているのは Windows 11 と git bash の組み合わせのみ。
+macOS と Linux では試していない。
 
 ## 構成
 
@@ -100,3 +107,7 @@ node --test
 
 テストはコマンドを子プロセスとして起動し、標準出力の JSON と終了コードを検証する。
 `CXTALK_HOME` に一時ディレクトリを渡すため、実際の会話データには触れない。
+
+## ライセンス
+
+MIT License. 詳細は [LICENSE](LICENSE) を参照。
