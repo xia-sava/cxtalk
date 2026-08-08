@@ -417,6 +417,25 @@ const closedHint = (id: string, unread: number, head = "ルームは閉じてい
       : head,
   );
 
+/** 待っている相手に閉室を伝える応答。理由は room から読む。 */
+const closedReply = (
+  room: Room,
+  participant: Participant,
+  as: string,
+): Record<string, unknown> => {
+  const messages = drainUnread(room, participant, as);
+  return {
+    ok: true,
+    status: "closed",
+    room_id: room.id,
+    closed_reason: room.closed_reason,
+    messages,
+    log_path: logPath(room.id),
+    next: "report",
+    hint: closedHint(room.id, messages.length),
+  };
+};
+
 const cmdOpen = (flags: Flags): void => {
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
@@ -664,19 +683,7 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   if (!participant) return null;
   const seq = latestSeq(id);
 
-  if (room.status === "closed") {
-    const messages = drainUnread(room, participant, as);
-    return {
-      ok: true,
-      status: "closed",
-      room_id: id,
-      closed_reason: room.closed_reason,
-      messages,
-      log_path: logPath(id),
-      next: "report",
-      hint: closedHint(id, messages.length),
-    };
-  }
+  if (room.status === "closed") return closedReply(room, participant, as);
 
   const seen = participant.last_read;
   if (seq > seen) {
@@ -767,6 +774,13 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     return;
   }
 
+  // 待っている間に相手が閉じていることがある。理由を決め打つと、
+  // 上限まで話し切った会話に応答が無かったという記録が残る。
+  if (room.status === "closed") {
+    emit(closedReply(room, participant, as));
+    return;
+  }
+
   // 参加を待っている間の時間切れは、会話中の長考とは別に数える。
   // 該当のフィールドを持たない状態ファイルもあるため、0 から数え直せる形で足す。
   const awaitingJoin = !bothJoined(room);
@@ -776,7 +790,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   const retriesLeft = RETRY_LIMIT - (awaitingJoin ? participant.join_timeouts : participant.timeouts);
 
   if (retriesLeft <= 0) {
-    if (room.status === "open") closeRoom(room, "no_response");
+    closeRoom(room, "no_response");
     emit({
       ok: true,
       status: "closed",
