@@ -41,9 +41,12 @@ type ParticipantState = { last_read: number; timeouts: number; join_timeouts: nu
 
 /** 人間が手で書き換える room.json。欠けた値や書き間違いを作れる形で持つ。 */
 type EditableRoom = {
+  id?: string;
   max_hops?: number | string;
   opener?: string;
   status?: string;
+  closed_reason?: string | null;
+  last_activity_at?: string;
   participants: Record<string, Partial<Record<keyof ParticipantState, number | string>>>;
 };
 
@@ -1228,8 +1231,17 @@ describe("状態ファイルの値", () => {
     ["max_hops が整数でない", (s) => void (s.max_hops = "5往復")],
     ["max_hops が欠けている", (s) => void delete s.max_hops],
     ["opener が欠けている", (s) => void delete s.opener],
+    ["opener が参加者にいない", (s) => void (s.opener = "zzz")],
     ["status が open でも closed でもない", (s) => void (s.status = "paused")],
+    ["closed_reason が定義された値でない", (s) => void (s.closed_reason = "飽きたから")],
+    ["last_activity_at が欠けている", (s) => void delete s.last_activity_at],
+    ["last_activity_at が日時として読めない", (s) => void (s.last_activity_at = "きのう")],
+    ["id がディレクトリ名と違う", (s) => void (s.id = "r-0000")],
     ["last_read が整数でない", (s) => void (s.participants.alpha.last_read = "3")],
+    [
+      "参加者の状態が object でない",
+      (s) => void ((s.participants as Record<string, unknown>).alpha = 3),
+    ],
   ];
 
   for (const [label, patch] of rejected) {
@@ -1244,6 +1256,18 @@ describe("状態ファイルの値", () => {
   test("断る理由を hint に書く", () => {
     const room = patched((s) => void (s.max_hops = "5往復"));
     assert.match(j("status", room, "--as", "alpha").hint!, /max_hops が 1 以上の整数ではありません/);
+  });
+
+  test("寄せられる値は直し方も添える", () => {
+    const room = patched((s) => void (s.participants.alpha.last_read = "3"));
+    assert.match(j("status", room, "--as", "alpha").hint!, /キーごと消せば 0 として読みます/);
+  });
+
+  test("実行時のエラーをそのまま人へ渡さない", () => {
+    const room = patched((s) => void ((s.participants as Record<string, unknown>).alpha = 3));
+    const hint = j("status", room, "--as", "alpha").hint!;
+    assert.match(hint, /alpha の状態が読み取れません/);
+    assert.doesNotMatch(hint, /Cannot/);
   });
 
   test("上限が読めないルームでは会話を進めない", () => {

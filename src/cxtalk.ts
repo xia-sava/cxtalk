@@ -128,11 +128,20 @@ const emit = (payload: Record<string, unknown>): void => {
   console.log(JSON.stringify(payload));
 };
 
+/**
+ * 状態ファイルの値が使えないことを表す。
+ * 読み込みでは解析器の投げるものも通るため、印を付けて自分の文だけを人へ渡す。
+ */
+const INVALID_STATE = "invalidState";
+
+const invalidState = (message: string): Error =>
+  Object.assign(new Error(message), { [INVALID_STATE]: true });
+
 /** 欠けていれば 0 として読む。書かれていて 0 以上の整数でなければ断る。 */
 const countOf = (value: unknown, label: string): number => {
   if (value === undefined) return 0;
   if (!Number.isInteger(value) || (value as number) < 0) {
-    throw new Error(`${label} が 0 以上の整数ではありません。`);
+    throw invalidState(`${label} が 0 以上の整数ではありません。キーごと消せば 0 として読みます。`);
   }
   return value as number;
 };
@@ -148,20 +157,34 @@ const readRoom = (id: string): Room | null => {
   const path = roomJsonPath(id);
   if (!existsSync(path)) return null;
   const room = JSON.parse(readFileSync(path, "utf8")) as Room;
+  if (room.id !== id) {
+    throw invalidState("id がディレクトリ名と一致しません。");
+  }
   if (room.status !== "open" && room.status !== "closed") {
-    throw new Error("status が open でも closed でもありません。");
+    throw invalidState("status が open でも closed でもありません。");
+  }
+  if (room.closed_reason !== null && !CLOSED_REASONS.includes(room.closed_reason)) {
+    throw invalidState(`closed_reason が ${CLOSED_REASONS.join(" / ")} のいずれでもありません。`);
   }
   if (!Number.isInteger(room.max_hops) || room.max_hops < 1) {
-    throw new Error("max_hops が 1 以上の整数ではありません。");
+    throw invalidState("max_hops が 1 以上の整数ではありません。");
   }
-  if (typeof room.opener !== "string" || room.opener === "") {
-    throw new Error("opener に参加者の名前がありません。");
+  // 日時として読めないと無音の長さが数えられず、掃除が効かないまま開いたルームが残る。
+  if (Number.isNaN(new Date(room.last_activity_at).getTime())) {
+    throw invalidState("last_activity_at が日時として読み取れません。");
   }
   if (typeof room.participants !== "object" || room.participants === null) {
-    throw new Error("participants がありません。");
+    throw invalidState("participants がありません。");
+  }
+  // 先手は participants の中から選ばれる。外れていると双方の番が来ない。
+  if (typeof room.opener !== "string" || !(room.opener in room.participants)) {
+    throw invalidState("opener が参加者の名前ではありません。");
   }
   room.stale_streak = countOf(room.stale_streak, "stale_streak");
   for (const [name, participant] of Object.entries(room.participants)) {
+    if (typeof participant !== "object" || participant === null) {
+      throw invalidState(`${name} の状態が読み取れません。`);
+    }
     participant.last_read = countOf(participant.last_read, `${name} の last_read`);
     participant.timeouts = countOf(participant.timeouts, `${name} の timeouts`);
     participant.join_timeouts = countOf(participant.join_timeouts, `${name} の join_timeouts`);
@@ -397,13 +420,15 @@ const notAParticipant = (id: string, as: string, room: Room): void => {
 };
 
 /**
- * 読めない理由。JSON として読めない場合の原因は解析器が英語で返すため、そこは固定文に畳む。
- * 値が使えない場合は検証を書いた側の文をそのまま渡す。
+ * 読めない理由。自分で投げたものだけを人へ渡す。
+ * 型は誰が投げたかの代わりにならない。読み込みでは解析器も実行時エラーも同じ経路を通り、
+ * どちらも英語のまま hint に乗ってしまう。
  */
-const reasonOf = (error: unknown): string =>
-  error instanceof SyntaxError || !(error instanceof Error)
-    ? "room.json を JSON として読み取れません。"
-    : `room.json の ${error.message}`;
+const reasonOf = (error: unknown): string => {
+  if (error instanceof Error && INVALID_STATE in error) return `room.json の ${error.message}`;
+  if (error instanceof SyntaxError) return "room.json を JSON として読み取れません。";
+  return "room.json を読み取れません。";
+};
 
 const corruptRoom = (id: string, reason: string): void => {
   emit({
