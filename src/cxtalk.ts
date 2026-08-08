@@ -606,8 +606,10 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     return;
   }
   if (!rejoined) room.participants[as] = newParticipant();
-  const messages = readMessages(id, room.participants[as].last_read, as);
+  // 既読の位置は、返した内容より古い側へ倒す。2 回の readdir の間に相手が発言すると、
+  // 逆の順序では返さないまま既読になり、その発言はどのコマンドでも読めなくなる。
   const seq = latestSeq(id);
+  const messages = readMessages(id, room.participants[as].last_read, as);
   room.participants[as].last_read = seq;
   if (room.status === "open") room.last_activity_at = nowIso();
   writeRoom(room);
