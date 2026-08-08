@@ -1,7 +1,7 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1817,6 +1817,42 @@ describe("利用者が叩く入口", () => {
     const r = JSON.parse(bin("open", "--topic", TOPIC, "--as", "alpha").out);
     assert.equal(r.topic, TOPIC);
     assert.equal(r.as, "alpha");
+  });
+});
+
+describe("名乗りの表現を一つに寄せる", () => {
+  // 見た目が同じでも合成済みと分解済みで別の文字列になる。寄せないと別人として断られ、
+  // エラー文と参加者一覧に同じ字面が並ぶ。
+  const NFC = "José";
+  const NFD = "José";
+
+  test("表現の違う同じ名前は同じ参加者として扱う", () => {
+    const room = j("open", "--topic", TOPIC, "--as", NFC).room_id!;
+    j("join", room, "--as", "beta");
+    assert.equal(j("say", room, "--text", "x", "--advanced", "true", "--as", NFD).ok, true);
+  });
+
+  test("どちらで名乗っても保存は一つの表現になる", () => {
+    const room = j("open", "--topic", TOPIC, "--as", NFD).room_id!;
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+    assert.deepEqual(Object.keys(state.participants), [NFC]);
+  });
+
+  test("再入場でも同じ参加者として扱う", () => {
+    const room = j("open", "--topic", TOPIC, "--as", NFC).room_id!;
+    j("join", room, "--as", "beta");
+    assert.equal(j("join", room, "--as", NFD).rejoined, true);
+  });
+
+  // 名前はファイル名を経由して戻る。保存した綴りを変える環境がある。
+  test("ファイル名の表現が変わっても自分の発言を未読にしない", () => {
+    const room = j("open", "--topic", TOPIC, "--as", NFC).room_id!;
+    j("join", room, "--as", "beta");
+    say(room, NFC, "ひとつめ", true);
+    const dir = join(home, "rooms", room, "messages");
+    const before = join(dir, `0001-${NFC}.md`);
+    renameSync(before, join(dir, `0001-${NFD}.md`));
+    assert.equal(j("status", room, "--as", NFC).unread![NFC], 0);
   });
 });
 

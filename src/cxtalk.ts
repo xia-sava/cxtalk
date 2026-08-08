@@ -302,8 +302,11 @@ const ignoredHint = (ignored: string[]): string =>
     : `発言として数えなかったファイルが ${ignored.length} 件あります（${ignored.join(" / ")}）。` +
       `本来の発言であればユーザーに知らせてください。`;
 
-const seqOfFile = (file: string): number => Number(file.slice(0, 4));
-const senderOfFile = (file: string): string => file.slice(5, -3);
+const seqOfFile = (file: string): number => Number(file.slice(0, SEQ_DIGITS));
+
+/** 名前はファイル名を経由して戻る。保存した綴りを変える環境があるため、比べる側でも寄せる。 */
+const senderOfFile = (file: string): string =>
+  file.slice(SEQ_DIGITS + 1, -3).normalize("NFC");
 
 const latestSeq = (id: string): number => {
   const files = messageFiles(id);
@@ -342,7 +345,12 @@ const writeMessage = (id: string, seq: number, from: string, text: string): void
   writing(path, () => writeFileSync(path, `---\nat: ${nowIso()}\n---\n${text}\n`, "utf8"));
 };
 
-const selfName = (flags: Flags): string => flags.as ?? basename(process.cwd());
+/**
+ * 名乗り。同じ字面でも合成済みと分解済みで別の文字列になるため、入口で一つに寄せる。
+ * 寄せないと、見た目の同じ名前が別人として断られる。
+ */
+const selfName = (flags: Flags): string =>
+  (flags.as ?? basename(process.cwd())).normalize("NFC");
 
 const hopsOf = (seq: number): number => Math.ceil(seq / 2);
 
