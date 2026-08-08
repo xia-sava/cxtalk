@@ -1233,9 +1233,11 @@ describe("状態ファイルの値", () => {
     ["opener が欠けている", (s) => void delete s.opener],
     ["opener が参加者にいない", (s) => void (s.opener = "zzz")],
     ["status が open でも closed でもない", (s) => void (s.status = "paused")],
-    ["closed_reason が定義された値でない", (s) => void (s.closed_reason = "飽きたから")],
     ["last_activity_at が欠けている", (s) => void delete s.last_activity_at],
     ["last_activity_at が日時として読めない", (s) => void (s.last_activity_at = "きのう")],
+    ["last_activity_at が文字列でない", (s) => void (s.last_activity_at = 0 as never)],
+    ["開いたルームに closed_reason がある", (s) => void (s.closed_reason = "manual")],
+    ["participants が配列", (s) => void ((s as Record<string, unknown>).participants = [])],
     ["id がディレクトリ名と違う", (s) => void (s.id = "r-0000")],
     ["last_read が整数でない", (s) => void (s.participants.alpha.last_read = "3")],
     [
@@ -1256,6 +1258,15 @@ describe("状態ファイルの値", () => {
   test("断る理由を hint に書く", () => {
     const room = patched((s) => void (s.max_hops = "5往復"));
     assert.match(j("status", room, "--as", "alpha").hint!, /max_hops が 1 以上の整数ではありません/);
+  });
+
+  test("閉じたルームの closed_reason が定義された値でなければ断る", () => {
+    const room = opened();
+    j("close", room, "--as", "alpha");
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8")) as EditableRoom;
+    state.closed_reason = "飽きたから";
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+    assert.equal(j("status", room, "--as", "alpha").error, "corrupt_room");
   });
 
   test("寄せられる値は直し方も添える", () => {

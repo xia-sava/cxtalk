@@ -163,17 +163,32 @@ const readRoom = (id: string): Room | null => {
   if (room.status !== "open" && room.status !== "closed") {
     throw invalidState("status が open でも closed でもありません。");
   }
-  if (room.closed_reason !== null && !CLOSED_REASONS.includes(room.closed_reason)) {
-    throw invalidState(`closed_reason が ${CLOSED_REASONS.join(" / ")} のいずれでもありません。`);
+  // 閉じた理由は報告にそのまま乗る。開閉と食い違うと、閉じた会話が理由なしで報告される。
+  if (room.status === "closed") {
+    if (!CLOSED_REASONS.includes(room.closed_reason as string)) {
+      throw invalidState(
+        `閉じたルームの closed_reason が ${CLOSED_REASONS.join(" / ")} のいずれでもありません。`,
+      );
+    }
+  } else if (room.closed_reason !== null) {
+    throw invalidState("開いたルームに closed_reason があります。");
   }
   if (!Number.isInteger(room.max_hops) || room.max_hops < 1) {
     throw invalidState("max_hops が 1 以上の整数ではありません。");
   }
   // 日時として読めないと無音の長さが数えられず、掃除が効かないまま開いたルームが残る。
-  if (Number.isNaN(new Date(room.last_activity_at).getTime())) {
+  // 日時は文字列で持つ。数値や真偽値も Date は受けるが、どれも 1970 になり掃除が即座に効く。
+  if (
+    typeof room.last_activity_at !== "string" ||
+    Number.isNaN(new Date(room.last_activity_at).getTime())
+  ) {
     throw invalidState("last_activity_at が日時として読み取れません。");
   }
-  if (typeof room.participants !== "object" || room.participants === null) {
+  if (
+    typeof room.participants !== "object" ||
+    room.participants === null ||
+    Array.isArray(room.participants)
+  ) {
     throw invalidState("participants がありません。");
   }
   // 先手は participants の中から選ばれる。外れていると双方の番が来ない。
@@ -425,7 +440,9 @@ const notAParticipant = (id: string, as: string, room: Room): void => {
  * どちらも英語のまま hint に乗ってしまう。
  */
 const reasonOf = (error: unknown): string => {
-  if (error instanceof Error && INVALID_STATE in error) return `room.json の ${error.message}`;
+  if (error instanceof Error && Object.hasOwn(error, INVALID_STATE)) {
+    return `room.json の ${error.message}`;
+  }
   if (error instanceof SyntaxError) return "room.json を JSON として読み取れません。";
   return "room.json を読み取れません。";
 };
