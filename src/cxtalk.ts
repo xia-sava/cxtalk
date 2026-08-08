@@ -168,20 +168,27 @@ const latestSeq = (id: string): number => {
   return files.length === 0 ? 0 : seqOfFile(files[files.length - 1]);
 };
 
-const readMessages = (id: string, after: number): Message[] =>
-  messageFiles(id)
-    .filter((file) => seqOfFile(file) > after)
-    .map((file) => {
-      const raw = readFileSync(join(messagesDir(id), file), "utf8");
-      const headEnd = raw.indexOf("\n---\n");
-      const body = raw.slice(headEnd + 5);
-      return {
-        seq: seqOfFile(file),
-        from: senderOfFile(file),
-        at: raw.slice(raw.indexOf("at: ") + 4, headEnd),
-        text: body.endsWith("\n") ? body.slice(0, -1) : body,
-      };
-    });
+/**
+ * まだ読んでいない相手の発言。自分の発言は含めない。
+ * 発言を書いてから状態を書くまでの間に落ちると自分の発言が未読として残り、
+ * そのまま渡せば自分の書いたものを相手の見解として読ませることになる。
+ * 読む側も数える側もここを通す。同じ条件が各所に散ると、片方だけが直る。
+ */
+const unreadFiles = (id: string, after: number, as: string): string[] =>
+  messageFiles(id).filter((file) => seqOfFile(file) > after && senderOfFile(file) !== as);
+
+const readMessages = (id: string, after: number, as: string): Message[] =>
+  unreadFiles(id, after, as).map((file) => {
+    const raw = readFileSync(join(messagesDir(id), file), "utf8");
+    const headEnd = raw.indexOf("\n---\n");
+    const body = raw.slice(headEnd + 5);
+    return {
+      seq: seqOfFile(file),
+      from: senderOfFile(file),
+      at: raw.slice(raw.indexOf("at: ") + 4, headEnd),
+      text: body.endsWith("\n") ? body.slice(0, -1) : body,
+    };
+  });
 
 const writeMessage = (id: string, seq: number, from: string, text: string): void => {
   const file = `${String(seq).padStart(4, "0")}-${from}.md`;
@@ -387,13 +394,15 @@ const reportHint = (id: string, head: string): string =>
  * 閉じたルームに残った未読を返し、既読にする。
  * 報告へ移る経路は複数あり、一部だけが未読を渡す形だと、
  * 受け取らなかった側は未読が無いものとして相手の最終見解を読まずに要約する。
+ *
+ * 見せるものと既読の位置は別の量として扱う。自分の発言しか残っていない場合、
+ * 返すものは無いが位置は進める。進めないと消えない未読として残り続ける。
  */
-const drainUnread = (room: Room, as: string): Message[] => {
-  const participant = room.participants[as];
-  if (!participant) return [];
-  const messages = readMessages(room.id, participant.last_read);
-  if (messages.length > 0) {
-    participant.last_read = latestSeq(room.id);
+const drainUnread = (room: Room, participant: Participant, as: string): Message[] => {
+  const latest = latestSeq(room.id);
+  const messages = readMessages(room.id, participant.last_read, as);
+  if (latest > participant.last_read) {
+    participant.last_read = latest;
     writeRoom(room);
   }
   return messages;
@@ -489,7 +498,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     return;
   }
   if (!rejoined) room.participants[as] = newParticipant();
-  const messages = readMessages(id, room.participants[as].last_read);
+  const messages = readMessages(id, room.participants[as].last_read, as);
   const seq = latestSeq(id);
   room.participants[as].last_read = seq;
   if (room.status === "open") room.last_activity_at = nowIso();
@@ -528,7 +537,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     return;
   }
   if (room.status === "closed") {
-    const messages = drainUnread(room, as);
+    const messages = drainUnread(room, room.participants[as], as);
     emit({
       ok: false,
       error: "closed",
@@ -595,7 +604,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   // 発言の前に未読を控える。last_read を自分の発言番号へ進めるため、
   // 先に取らないと読んでいない相手の発言まで既読になり、あとから読む手段が残らない。
   // 発言権は seq から導けるので、相手の発言を受け取らないまま say できる。
-  const unread = readMessages(id, room.participants[as].last_read);
+  const unread = readMessages(id, room.participants[as].last_read, as);
   writeMessage(id, seq, as, text);
   room.stale_streak = advanced === "true" ? 0 : room.stale_streak + 1;
   room.participants[as].last_read = seq;
@@ -650,11 +659,13 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   const room = safeReadRoom(id);
   if (!room) return null;
   sweepIdle(room);
-  const seq = latestSeq(id);
   const participant = room.participants[as];
+  // 参加を確かめてから呼ばれる。一度 join すれば close まで参加者なので、ここで欠けることはない。
+  if (!participant) return null;
+  const seq = latestSeq(id);
 
   if (room.status === "closed") {
-    const messages = drainUnread(room, as);
+    const messages = drainUnread(room, participant, as);
     return {
       ok: true,
       status: "closed",
@@ -667,17 +678,13 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
     };
   }
 
-  const seen = participant?.last_read ?? 0;
+  const seen = participant.last_read;
   if (seq > seen) {
-    // 発言を書いてから状態を書くまでの間に落ちると、自分の発言が未読として残る。
-    // そのまま返すと、自分が書いたものを相手の発言として読ませることになる。
-    const messages = readMessages(id, seen).filter((message) => message.from !== as);
-    if (participant) {
-      participant.last_read = seq;
-      // 相手の応答が届いた時点で待ち直しになる。時間切れは往復のたびに起きるため、
-      // 数え続けると応答している相手との会話が打ち切られる。
-      if (messages.length > 0) participant.timeouts = 0;
-    }
+    const messages = readMessages(id, seen, as);
+    participant.last_read = seq;
+    // 相手の応答が届いた時点で待ち直しになる。時間切れは往復のたびに起きるため、
+    // 数え続けると応答している相手との会話が打ち切られる。
+    if (messages.length > 0) participant.timeouts = 0;
     room.last_activity_at = nowIso();
     writeRoom(room);
     if (messages.length === 0) return null;
@@ -806,10 +813,9 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
 };
 
 const unreadOf = (room: Room): Record<string, number> => {
-  const latest = latestSeq(room.id);
   const unread: Record<string, number> = {};
   for (const name of Object.keys(room.participants)) {
-    unread[name] = Math.max(0, latest - room.participants[name].last_read);
+    unread[name] = unreadFiles(room.id, room.participants[name].last_read, name).length;
   }
   return unread;
 };
@@ -880,7 +886,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   }
   const alreadyClosed = room.status === "closed";
   if (!alreadyClosed) closeRoom(room, reason as ClosedReason);
-  const messages = drainUnread(room, as);
+  const messages = drainUnread(room, room.participants[as], as);
   emit({
     ok: true,
     room_id: id,
@@ -964,15 +970,14 @@ const cmdCheck = (flags: Flags): void => {
       if (!participant) continue;
       const seq = latestSeq(id);
       if (turnOf(room, seq) !== as) continue;
-      const unread = seq - participant.last_read;
-      if (unread <= 0) continue;
-      const files = messageFiles(id);
+      const files = unreadFiles(id, participant.last_read, as);
+      if (files.length === 0) continue;
       const from = senderOfFile(files[files.length - 1]);
       // 閉じたルームに残りの往復はない。中断を判断する材料として読まれるため、
       // 続けられる会話と同じ表示にしない。
       const remaining =
         room.status === "closed" ? "閉じています" : `残り${hopsLeftOf(room, seq)}往復`;
-      lines.push(`${id}: ${from} から ${unread} 件（${remaining}）— ${room.topic}`);
+      lines.push(`${id}: ${from} から ${files.length} 件（${remaining}）— ${room.topic}`);
     }
     if (lines.length === 0) {
       process.exitCode = 1;

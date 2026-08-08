@@ -592,6 +592,53 @@ describe("閉じたルームの未読", () => {
   });
 });
 
+describe("落ちた自分の発言を未読として扱わない", () => {
+  /** 自分の発言と相手の発言の両方が未読として残った状態を作る。 */
+  const mixed = (): string => {
+    const room = opened(3);
+    say(room, "alpha", "ひとつめ", true);
+    say(room, "beta", "ふたつめ", true);
+    dropLastRead(room, "alpha");
+    return room;
+  };
+
+  /** 未読が自分の発言だけの状態を作る。 */
+  const onlyOwn = (): string => {
+    const room = opened(3);
+    say(room, "alpha", "ひとつめ", true);
+    j("close", room, "--as", "alpha");
+    dropLastRead(room, "alpha");
+    return room;
+  };
+
+  test("閉じたルームの receive は相手の発言だけを返す", () => {
+    const room = mixed();
+    j("close", room, "--as", "beta");
+    assert.deepEqual(
+      j("receive", room, "--as", "alpha").messages!.map((m) => m.text),
+      ["ふたつめ"],
+    );
+  });
+
+  test("自分の発言しかなければ messages は空", () => {
+    assert.deepEqual(j("receive", onlyOwn(), "--as", "alpha").messages, []);
+  });
+
+  test("返すものが無くても既読の位置は進む", () => {
+    const room = onlyOwn();
+    j("receive", room, "--as", "alpha");
+    assert.equal(participantState(room, "alpha").last_read, 1);
+  });
+
+  test("status の未読件数は自分の発言を含めない", () => {
+    assert.equal(j("status", mixed()).unread!.alpha, 1);
+  });
+
+  test("check の件数も自分の発言を含めない", () => {
+    assert.match(run("check", "--as", "alpha", "--room", mixed()).out, /beta から 1 件/);
+  });
+});
+
 describe("終端の伝え方", () => {
   test("上限で閉じた発言には相手が応答できないと伝える", () => {
     const room = opened(1);
