@@ -570,6 +570,10 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   }
 
   const seq = current + 1;
+  // 発言の前に未読を控える。last_read を自分の発言番号へ進めるため、
+  // 先に取らないと読んでいない相手の発言まで既読になり、あとから読む手段が残らない。
+  // 発言権は seq から導けるので、相手の発言を受け取らないまま say できる。
+  const unread = readMessages(id, room.participants[as].last_read);
   writeMessage(id, seq, as, text);
   room.stale_streak = advanced === "true" ? 0 : room.stale_streak + 1;
   room.participants[as].last_read = seq;
@@ -588,10 +592,12 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       hops_left: hopsLeft,
       status: "closed",
       closed_reason: reason,
+      messages: unread,
       log_path: logPath(id),
       next: "report",
-      hint: reportHint(
+      hint: closedHint(
         id,
+        unread.length,
         reason === "hop_limit"
           ? "往復上限に達したのでルームを閉じました。この発言に相手は応答できません。"
           : "前に進む発言が続かなかったのでルームを閉じました。",
@@ -749,14 +755,16 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
       closed_reason: "no_response",
       log_path: logPath(id),
       next: "report",
-      hint: reportHint(
-        id,
-        awaitingJoin
-          ? "待機の上限に達したためルームを閉じました。相手はまだ参加していません。" +
-            "room_id が伝わっていないか、--as の付け忘れで相手と同じ名前になっている可能性があります。"
-          : "待機の上限に達したためルームを閉じました。相手が停止したのか、まだ考えているのかは区別できません。" +
+      // 相手が一度も参加していなければ発言も無い。起きていない会話に要約を求めない。
+      hint: awaitingJoin
+        ? "待機の上限に達したためルームを閉じました。相手はまだ参加しておらず、発言もありません。" +
+          "要約するものはないので、room_id が正しく伝わったかをユーザーに確かめてください。" +
+          "room_id が伝わっていないか、--as の付け忘れで相手と同じ名前になっている可能性があります。"
+        : reportHint(
+            id,
+            "待機の上限に達したためルームを閉じました。相手が停止したのか、まだ考えているのかは区別できません。" +
               "どちらであるかを断定せず、応答が得られなかった事実として報告してください。",
-      ),
+          ),
     });
     return;
   }

@@ -1403,4 +1403,66 @@ describe("待機の上限に達したときの案内", () => {
     say(room, "alpha", "最初の論点です", true);
     assert.doesNotMatch(exhaust(room, "alpha").hint!, /--as/);
   });
+
+  // 相手が一度も参加していなければ発言も無い。起きていない会話に要約を求めない。
+  test("参加が成立しないまま閉じたら要約を求めない", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    const r = exhaust(room, "alice");
+    assert.equal(r.closed_reason, "no_response");
+    assert.doesNotMatch(r.hint!, /合意できた点/);
+  });
+
+  test("代わりに room_id が伝わったかを確かめさせる", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    assert.match(exhaust(room, "alice").hint!, /room_id/);
+  });
+
+  test("会話が成立した後なら要約を求める", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    assert.match(exhaust(room, "alpha").hint!, /合意できた点/);
+  });
+});
+
+describe("上限に達する発言が未読を捨てない", () => {
+  // 発言権は seq から導けるため、相手の発言を受け取らないまま say できる。
+  // last_read を自分の発言番号へ進めるので、先に控えないと読む手段が消える。
+  test("hop_limit で閉じるとき未読を返す", () => {
+    const room = opened(1);
+    say(room, "alpha", "最初の論点です", true);
+    const r = say(room, "beta", "読まずに応答します", true);
+    assert.equal(r.closed_reason, "hop_limit");
+    assert.equal(r.messages!.length, 1);
+    assert.equal(r.messages![0].text, "最初の論点です");
+  });
+
+  test("stale で閉じるとき未読を返す", () => {
+    const room = opened();
+    say(room, "alpha", "同意します", false);
+    const r = say(room, "beta", "こちらも同意です", false);
+    assert.equal(r.closed_reason, "stale");
+    assert.equal(r.messages!.length, 1);
+  });
+
+  test("未読があることを hint で伝える", () => {
+    const room = opened(1);
+    say(room, "alpha", "最初の論点です", true);
+    assert.match(say(room, "beta", "読まずに応答します", true).hint!, /未読が 1 件/);
+  });
+
+  test("自分の発言は未読に含めない", () => {
+    const room = opened(1);
+    say(room, "alpha", "最初の論点です", true);
+    const r = say(room, "beta", "読まずに応答します", true);
+    assert.ok(r.messages!.every((m) => m.from !== "beta"));
+  });
+
+  test("読んでから発言すれば未読は付かない", () => {
+    const room = opened(1);
+    say(room, "alpha", "最初の論点です", true);
+    j("receive", room, "--as", "beta");
+    const r = say(room, "beta", "読んでから応答します", true);
+    assert.equal(r.messages!.length, 0);
+    assert.doesNotMatch(r.hint!, /未読/);
+  });
 });
