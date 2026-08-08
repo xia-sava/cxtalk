@@ -1819,6 +1819,65 @@ describe("利用者が叩く入口", () => {
   });
 });
 
+describe("返せない状況でも約束を守る", () => {
+  /**
+   * 標準出力に JSON を 1 行返して 0 で終わることは、呼び出し側との約束である。
+   * 状況はテスト自身が作る。書き込めない場所は、ディレクトリの位置にファイルを置いて作る。
+   */
+  const contract = (r: Run): Reply => {
+    assert.equal(r.code, 0, "終了コードが 0 でない");
+    assert.equal(r.err, "", "標準エラーに何か出ている");
+    assert.equal(r.out.trimEnd().split("\n").length, 1, "標準出力が 1 行でない");
+    return JSON.parse(r.out);
+  };
+
+  test("置き場所がファイルなら書けないものとして返す", () => {
+    const file = join(home, "not-a-directory");
+    writeFileSync(file, "", "utf8");
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", CLI, "open", "--topic", TOPIC, "--as", "alpha"], {
+      encoding: "utf8",
+      env: { ...process.env, CXTALK_HOME: file },
+    });
+    const reply = contract({ out: r.stdout ?? "", err: r.stderr ?? "", code: r.status ?? -1 });
+    assert.equal(reply.error, "unwritable");
+    assert.equal(reply.next, "ask_user");
+  });
+
+  test("発言の置き場所が消えていたら書けないものとして返す", () => {
+    const room = opened();
+    rmSync(join(home, "rooms", room, "messages"), { recursive: true, force: true });
+    const reply = contract(run("say", room, "--text", "x", "--advanced", "true", "--as", "alpha"));
+    assert.equal(reply.error, "unwritable");
+  });
+
+  test("書けない場所を hint で名指しする", () => {
+    const room = opened();
+    rmSync(join(home, "rooms", room, "messages"), { recursive: true, force: true });
+    const reply = JSON.parse(run("say", room, "--text", "x", "--advanced", "true", "--as", "alpha").out);
+    assert.match(reply.hint, /0001-alpha\.md/);
+    assert.match(reply.hint, /権限/);
+  });
+
+  test("発言のファイルがディレクトリでも JSON で返す", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    mkdirSync(join(home, "rooms", room, "messages", "0002-beta.md"), { recursive: true });
+    const reply = contract(run("receive", room, "--as", "alpha"));
+    assert.equal(reply.ok, false);
+    assert.equal(reply.next, "ask_user");
+  });
+
+  test("名前の付かない失敗は元の文言を添えて人へ渡す", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    mkdirSync(join(home, "rooms", room, "messages", "0002-beta.md"), { recursive: true });
+    const reply = JSON.parse(run("receive", room, "--as", "alpha").out);
+    assert.equal(reply.error, "unexpected_failure");
+    assert.match(reply.hint, /EISDIR/);
+  });
+
+});
+
 describe("Stop hook", () => {
   const active = (value: boolean): string =>
     JSON.stringify({ session_id: "s-1", stop_hook_active: value });

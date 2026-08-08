@@ -122,8 +122,12 @@ const parseArgv = (argv: string[]): Parsed => {
   return { command, positional: words.slice(1), flags, error };
 };
 
+/** 呼び出し側は標準出力を 1 行の JSON として読む。2 行目を出さないために覚えておく。 */
+let emitted = false;
+
 const emit = (payload: Record<string, unknown>): void => {
   console.log(JSON.stringify(payload));
+  emitted = true;
 };
 
 /**
@@ -134,6 +138,21 @@ const INVALID_STATE = "invalidState";
 
 const invalidState = (message: string): Error =>
   Object.assign(new Error(message), { [INVALID_STATE]: true });
+
+/**
+ * 書き込めないことを表す。値が読めない場合と分けるのは、
+ * 人に確かめてほしいものが中身ではなく置き場所と権限だからである。
+ */
+const UNWRITABLE = "unwritable";
+
+/** 書き込みの失敗にどこへ書こうとしたかを添える。失敗しても投げるものを 1 種類に保つ。 */
+const writing = <T>(path: string, write: () => T): T => {
+  try {
+    return write();
+  } catch (cause) {
+    throw Object.assign(new Error(path), { [UNWRITABLE]: true, cause });
+  }
+};
 
 /** 欠けていれば 0 として読む。書かれていて 0 以上の整数でなければ断る。 */
 const countOf = (value: unknown, label: string): number => {
@@ -218,7 +237,8 @@ const safeReadRoom = (id: string): Room | null => {
 };
 
 const writeRoom = (room: Room): void => {
-  writeFileSync(roomJsonPath(room.id), `${JSON.stringify(room, null, 2)}\n`, "utf8");
+  const path = roomJsonPath(room.id);
+  writing(path, () => writeFileSync(path, `${JSON.stringify(room, null, 2)}\n`, "utf8"));
 };
 
 const newParticipant = (): Participant => ({ last_read: 0, timeouts: 0, join_timeouts: 0 });
@@ -262,8 +282,8 @@ const readMessages = (id: string, after: number, as: string): Message[] =>
   });
 
 const writeMessage = (id: string, seq: number, from: string, text: string): void => {
-  const file = `${String(seq).padStart(4, "0")}-${from}.md`;
-  writeFileSync(join(messagesDir(id), file), `---\nat: ${nowIso()}\n---\n${text}\n`, "utf8");
+  const path = join(messagesDir(id), `${String(seq).padStart(4, "0")}-${from}.md`);
+  writing(path, () => writeFileSync(path, `---\nat: ${nowIso()}\n---\n${text}\n`, "utf8"));
 };
 
 const selfName = (flags: Flags): string => flags.as ?? basename(process.cwd());
@@ -538,7 +558,7 @@ const cmdOpen = (flags: Flags): void => {
     return;
   }
   const id = newRoomId();
-  mkdirSync(messagesDir(id), { recursive: true });
+  writing(messagesDir(id), () => mkdirSync(messagesDir(id), { recursive: true }));
   writeRoom({
     id,
     topic,
@@ -1106,48 +1126,97 @@ const cmdCheck = (flags: Flags): void => {
   }
 };
 
-const { command, positional, flags, error } = parseArgv(process.argv.slice(2));
-
-if (error !== undefined) {
-  // check は終了コードで答える設計なので、値の欠落も安全側の 2 に倒す。
-  if (command === "check") process.exitCode = 2;
-  else invalidArgument(error);
-} else {
-  switch (command) {
-    case "open":
-      cmdOpen(flags);
-      break;
-    case "join":
-      cmdJoin(positional, flags);
-      break;
-    case "say":
-      cmdSay(positional, flags);
-      break;
-    case "receive":
-      await cmdReceive(positional, flags);
-      break;
-    case "status":
-      cmdStatus(positional, flags);
-      break;
-    case "close":
-      cmdClose(positional, flags);
-      break;
-    case "ls":
-      cmdLs();
-      break;
-    case "check":
-      cmdCheck(flags);
-      break;
-    default:
-      emit({
-        ok: false,
-        error: "unknown_command",
-        next: "retry",
-        hint:
-          (command === ""
-            ? "コマンドが指定されていません。"
-            : `${command} は未対応のコマンドです。`) +
-          `使えるのは ${COMMANDS.join(" / ")} です。`,
-      });
+/**
+ * 標準出力に JSON を 1 行返して 0 で終わることは、個々の操作の性質ではなく
+ * 呼び出し側との約束である。操作ごとに囲むと、次に足した操作が同じ穴を開ける。
+ * 入口で受けて、どの経路から投げても約束の側を保つ。
+ */
+const failed = (thrown: unknown): void => {
+  // check は自身の中でも受けている。ここへ来るのは引数の解釈で投げた場合だけで、
+  // 終了コードで答える設計に合わせ、JSON を足さず安全側の 2 に倒す。
+  if (command === "check") {
+    process.exitCode = 2;
+    return;
   }
+  // 既に返した後で投げた場合、2 行目を足すと呼び出し側の読み取りが壊れる。
+  // 握り潰さずに済ませるため、標準エラーへ 1 行だけ残す。
+  if (emitted) {
+    console.error(`cxtalk: 応答を返した後に失敗しました: ${messageOf(thrown)}`);
+    return;
+  }
+  if (thrown instanceof Error && Object.hasOwn(thrown, UNWRITABLE)) {
+    emit({
+      ok: false,
+      error: UNWRITABLE,
+      next: "ask_user",
+      hint:
+        `${thrown.message} に書き込めません。` +
+        `置き場所があるか、書き込む権限があるかをユーザーに確認してもらってください。`,
+    });
+    return;
+  }
+  emit({
+    ok: false,
+    error: "unexpected_failure",
+    next: "ask_user",
+    hint: `予期しない失敗です。${messageOf(thrown)} をそのままユーザーに伝えてください。`,
+  });
+};
+
+const messageOf = (thrown: unknown): string =>
+  thrown instanceof Error ? thrown.message : String(thrown);
+
+// 引数の解釈も入口の内側に置く。手前に何かを残すと、そこだけ約束の外になる。
+let command = "";
+
+try {
+  const parsed = parseArgv(process.argv.slice(2));
+  const { positional, flags, error } = parsed;
+  command = parsed.command;
+
+  if (error !== undefined) {
+    // check は終了コードで答える設計なので、値の欠落も安全側の 2 に倒す。
+    if (command === "check") process.exitCode = 2;
+    else invalidArgument(error);
+  } else {
+    switch (command) {
+      case "open":
+        cmdOpen(flags);
+        break;
+      case "join":
+        cmdJoin(positional, flags);
+        break;
+      case "say":
+        cmdSay(positional, flags);
+        break;
+      case "receive":
+        await cmdReceive(positional, flags);
+        break;
+      case "status":
+        cmdStatus(positional, flags);
+        break;
+      case "close":
+        cmdClose(positional, flags);
+        break;
+      case "ls":
+        cmdLs();
+        break;
+      case "check":
+        cmdCheck(flags);
+        break;
+      default:
+        emit({
+          ok: false,
+          error: "unknown_command",
+          next: "retry",
+          hint:
+            (command === ""
+              ? "コマンドが指定されていません。"
+              : `${command} は未対応のコマンドです。`) +
+            `使えるのは ${COMMANDS.join(" / ")} です。`,
+        });
+    }
+  }
+} catch (thrown) {
+  failed(thrown);
 }
