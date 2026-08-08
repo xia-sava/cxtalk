@@ -39,6 +39,7 @@ type Reply = {
   retries_left?: number;
   waited_seconds?: number;
   unread?: Record<string, number>;
+  ignored?: string[];
   participants?: string[];
   last_activity_at?: string;
   log_path?: string;
@@ -1816,6 +1817,67 @@ describe("利用者が叩く入口", () => {
     const r = JSON.parse(bin("open", "--topic", TOPIC, "--as", "alpha").out);
     assert.equal(r.topic, TOPIC);
     assert.equal(r.as, "alpha");
+  });
+});
+
+describe("発言のファイルを検算する", () => {
+  /** log_path は人に見に行けと案内している場所なので、関係ないファイルが増えうる。 */
+  const withFile = (name: string, body = "memo\n"): string => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    writeFileSync(join(home, "rooms", room, "messages", name), body, "utf8");
+    return room;
+  };
+
+  const notMessages = ["notes.md", "Untitled.md", "0002beta.md", "002-beta.md", "0002-123.md"];
+
+  for (const name of notMessages) {
+    test(`${name} は発言として数えない`, () => {
+      const r = j("status", withFile(name), "--as", "alpha");
+      assert.equal(r.hops_left, 4);
+      assert.equal(r.unread!.beta, 1);
+    });
+  }
+
+  test("数えなかったファイルを status が挙げる", () => {
+    assert.deepEqual(j("status", withFile("notes.md"), "--as", "alpha").ignored, ["notes.md"]);
+  });
+
+  test("数えなかったファイルを join が挙げる", () => {
+    assert.deepEqual(j("join", withFile("notes.md"), "--as", "beta").ignored, ["notes.md"]);
+  });
+
+  test("数えなかったことを hint でも伝える", () => {
+    assert.match(j("status", withFile("notes.md"), "--as", "alpha").hint!, /notes\.md/);
+  });
+
+  test("何も落としていなければ ignored は空", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    assert.deepEqual(j("status", room, "--as", "alpha").ignored, []);
+  });
+
+  // 通し番号が詰まっていることは、発言権と往復数の導出が既に仮定している。
+  test("通し番号に穴があれば断る", () => {
+    const r = j("status", withFile("9999-alpha.md"), "--as", "alpha");
+    assert.equal(r.error, "corrupt_room");
+    assert.match(r.hint!, /通し番号/);
+  });
+
+  test("ヘッダの無い発言は断る", () => {
+    const room = withFile("0002-beta.md", "ヘッダが無い。\n");
+    const r = j("receive", room, "--as", "alpha");
+    assert.equal(r.error, "corrupt_room");
+  });
+
+  // room.json を見に行かせないために、開くべきファイルを名指しする。
+  test("断るときにどのファイルかを言う", () => {
+    const room = withFile("0002-beta.md", "ヘッダが無い。\n");
+    assert.match(j("receive", room, "--as", "alpha").hint!, /0002-beta\.md/);
+  });
+
+  test("形の合わないファイルは断る理由にしない", () => {
+    assert.equal(j("status", withFile("notes.md"), "--as", "alpha").ok, true);
   });
 });
 

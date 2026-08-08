@@ -140,6 +140,15 @@ const invalidState = (message: string): Error =>
   Object.assign(new Error(message), { [INVALID_STATE]: true });
 
 /**
+ * 発言のファイルが使えないことを表す。room.json とは別に持つのは、
+ * 開いて直す先が違うためである。どのファイルかを言えないと、人は room.json を見に行く。
+ */
+const INVALID_MESSAGE = "invalidMessage";
+
+const invalidMessage = (id: string, message: string): Error =>
+  Object.assign(new Error(message), { [INVALID_MESSAGE]: true, roomId: id });
+
+/**
  * 書き込めないことを表す。値が読めない場合と分けるのは、
  * 人に確かめてほしいものが中身ではなく置き場所と権限だからである。
  */
@@ -221,6 +230,14 @@ const readRoom = (id: string): Room | null => {
     participant.timeouts = countOf(participant.timeouts, `${name} の timeouts`);
     participant.join_timeouts = countOf(participant.join_timeouts, `${name} の join_timeouts`);
   }
+  // 発言権と往復数は通し番号から導く。番号が詰まっていることは設計が既に仮定しているので、
+  // ここで確かめる。穴の前後どちらが本来の並びかは決められないため、数え直しはしない。
+  messageFiles(id).forEach((file, index) => {
+    const seq = seqOfFile(file);
+    if (seq !== index + 1) {
+      throw invalidMessage(id, `発言の通し番号が ${index + 1} ではなく ${seq} から続いています。`);
+    }
+  });
   return room;
 };
 
@@ -243,13 +260,33 @@ const writeRoom = (room: Room): void => {
 
 const newParticipant = (): Participant => ({ last_read: 0, timeouts: 0, join_timeouts: 0 });
 
-const messageFiles = (id: string): string[] => {
-  const dir = messagesDir(id);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".md"))
-    .sort();
+/**
+ * 発言のファイル名。通し番号と発言者をここから取り出し、発言権も往復数もそれに従うため、
+ * 形の合わないものを数えると会話の状態が変わる。room.json より重い状態がここにある。
+ */
+const MESSAGE_FILE = /^(\d{4})-(.+)\.md$/;
+
+const isMessageFile = (file: string): boolean => {
+  const match = MESSAGE_FILE.exec(file);
+  return match !== null && isValidName(match[2]);
 };
+
+const entriesOf = (id: string): string[] => {
+  const dir = messagesDir(id);
+  return existsSync(dir) ? readdirSync(dir) : [];
+};
+
+const messageFiles = (id: string): string[] => entriesOf(id).filter(isMessageFile).sort();
+
+/** 発言として数えなかったもの。黙って落とすと、発言が消えたようにしか見えない。 */
+const ignoredFiles = (id: string): string[] => entriesOf(id).filter((f) => !isMessageFile(f));
+
+/** 数えなかったことを伝える窓。発言が誤って落ちたときに気づける経路はここだけになる。 */
+const ignoredHint = (ignored: string[]): string =>
+  ignored.length === 0
+    ? ""
+    : `発言として数えなかったファイルが ${ignored.length} 件あります（${ignored.join(" / ")}）。` +
+      `本来の発言であればユーザーに知らせてください。`;
 
 const seqOfFile = (file: string): number => Number(file.slice(0, 4));
 const senderOfFile = (file: string): string => file.slice(5, -3);
@@ -272,6 +309,11 @@ const readMessages = (id: string, after: number, as: string): Message[] =>
   unreadFiles(id, after, as).map((file) => {
     const raw = readFileSync(join(messagesDir(id), file), "utf8");
     const headEnd = raw.indexOf("\n---\n");
+    // ヘッダが無いと日時も本文も別の位置から切り出され、
+    // 参加者の名前で、その人が書いていない発言として返ることになる。
+    if (!raw.startsWith("---\nat: ") || headEnd < 0) {
+      throw invalidMessage(id, `${file} が発言の形をしていません。`);
+    }
     const body = raw.slice(headEnd + 5);
     return {
       seq: seqOfFile(file),
@@ -458,6 +500,9 @@ const notAParticipant = (id: string, as: string, room: Room): void => {
  * どちらも英語のまま hint に乗ってしまう。
  */
 const reasonOf = (error: unknown): string => {
+  if (error instanceof Error && Object.hasOwn(error, INVALID_MESSAGE)) {
+    return error.message;
+  }
   if (error instanceof Error && Object.hasOwn(error, INVALID_STATE)) {
     return `room.json の ${error.message}`;
   }
@@ -635,11 +680,13 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   writeRoom(room);
   const turn = turnOf(room, seq);
   const next = nextOf(room, as, seq);
+  const ignored = ignoredFiles(id);
   emit({
     ok: true,
     room_id: id,
     as,
     rejoined,
+    ignored,
     topic: room.topic,
     status: room.status,
     hops_left: hopsLeftOf(room, seq),
@@ -647,7 +694,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     turn,
     log_path: logPath(id),
     next,
-    hint: joinHint(room, seq, messages.length, rejoined, next),
+    hint: joinHint(room, seq, messages.length, rejoined, next) + ignoredHint(ignored),
   });
 };
 
@@ -980,6 +1027,7 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   sweepIdle(room);
   const seq = latestSeq(id);
   const unread = unreadOf(room);
+  const ignored = ignoredFiles(id);
   // 参加していない名前に say や receive を促すと、その次で断られる。
   const next: Next = as in room.participants ? nextOf(room, as, seq) : "ask_user";
   emit({
@@ -990,11 +1038,12 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
     turn: turnOf(room, seq),
     hops_left: hopsLeftOf(room, seq),
     unread,
+    ignored,
     participants: Object.keys(room.participants),
     last_activity_at: room.last_activity_at,
     log_path: logPath(id),
     next,
-    hint: statusHint(room, as, seq, next, unread[as] ?? 0),
+    hint: statusHint(room, as, seq, next, unread[as] ?? 0) + ignoredHint(ignored),
   });
 };
 
@@ -1142,6 +1191,12 @@ const failed = (thrown: unknown): void => {
   // 握り潰さずに済ませるため、標準エラーへ 1 行だけ残す。
   if (emitted) {
     console.error(`cxtalk: 応答を返した後に失敗しました: ${messageOf(thrown)}`);
+    return;
+  }
+  // 発言のファイルは読む直前まで開かれないため、ここまで届く。
+  // 読めない理由の伝え方は room.json のときと同じ枠に載せる。
+  if (thrown instanceof Error && Object.hasOwn(thrown, INVALID_MESSAGE)) {
+    corruptRoom((thrown as Error & { roomId: string }).roomId, reasonOf(thrown));
     return;
   }
   if (thrown instanceof Error && Object.hasOwn(thrown, UNWRITABLE)) {
