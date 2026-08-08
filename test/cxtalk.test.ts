@@ -654,7 +654,22 @@ describe("名乗り", () => {
     const r = j("say", room, "--text", "ひとりごと", "--advanced", "true");
     assert.equal(r.ok, false);
     assert.equal(r.error, "alone_in_room");
-    assert.equal(r.next, "ask_user");
+  });
+
+  // 相手を待てば解決する。人間を呼ぶと、席を外している間は会話が止まる。
+  test("相手を待つよう促す", () => {
+    const room = j("open", "--topic", TOPIC).room_id!;
+    j("join", room);
+    const r = j("say", room, "--text", "ひとりごと", "--advanced", "true");
+    assert.equal(r.next, "receive");
+    assert.match(r.hint!, /receive/);
+  });
+
+  test("待っても来ない場合の手掛かりを添える", () => {
+    const room = j("open", "--topic", TOPIC).room_id!;
+    j("join", room);
+    const r = j("say", room, "--text", "ひとりごと", "--advanced", "true");
+    assert.match(r.hint!, /--as/);
   });
 
   test("相手が来るまでは開いた本人も発言できない", () => {
@@ -1286,5 +1301,106 @@ describe("一覧の案内", () => {
 
   test("ルームが無いときも次の行動を書く", () => {
     assert.match(j("ls").hint!, /open/);
+  });
+});
+
+describe("報告へ移る経路の未読", () => {
+  /** beta の最後の発言が alpha にとって未読のまま、上限で閉じた状態を作る。 */
+  const closedWithUnread = (): string => {
+    const room = opened(1);
+    say(room, "alpha", "最初の論点です", true);
+    j("receive", room, "--as", "beta");
+    say(room, "beta", "最後の見解です", true);
+    return room;
+  };
+
+  // 一部の経路だけが未読を渡す形だと、受け取らなかった側は
+  // 未読が無いものとして相手の最終見解を読まずに要約する。
+  const withUnread: [string, string[]][] = [
+    ["say", ["--text", "x", "--advanced", "true"]],
+    ["close", ["--reason", "manual"]],
+    ["join", []],
+    ["receive", []],
+  ];
+
+  for (const [command, args] of withUnread) {
+    test(`${command} は未読を返す`, () => {
+      const room = closedWithUnread();
+      const r = j(command, room, ...args, "--as", "alpha");
+      assert.equal(r.next, "report");
+      assert.equal(r.messages!.length, 1);
+      assert.equal(r.messages![0].text, "最後の見解です");
+    });
+
+    test(`${command} は未読があることを hint で伝える`, () => {
+      const room = closedWithUnread();
+      assert.match(j(command, room, ...args, "--as", "alpha").hint!, /未読が 1 件/);
+    });
+
+    test(`${command} で受け取った後は未読が残らない`, () => {
+      const room = closedWithUnread();
+      j(command, room, ...args, "--as", "alpha");
+      assert.equal(j("status", room, "--as", "alpha").unread!.alpha, 0);
+    });
+  }
+
+  // status は確認しただけで既読にしないことが役割なので、読む手段の方を伝える。
+  test("status は未読を既読にしない", () => {
+    const room = closedWithUnread();
+    j("status", room, "--as", "alpha");
+    assert.equal(j("status", room, "--as", "alpha").unread!.alpha, 1);
+  });
+
+  test("status は未読の件数と読む手段を hint に出す", () => {
+    const room = closedWithUnread();
+    const r = j("status", room, "--as", "alpha");
+    assert.match(r.hint!, /未読が 1 件/);
+    assert.match(r.hint!, /receive/);
+  });
+
+  test("未読がなければ件数を出さない", () => {
+    const room = closedWithUnread();
+    j("receive", room, "--as", "alpha");
+    assert.doesNotMatch(j("status", room, "--as", "alpha").hint!, /未読/);
+  });
+});
+
+describe("参加していない名前への案内", () => {
+  const oneParticipant = (): string => j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+
+  // room_id を取り違えていた場合、join すると無関係のルームへ 2 人目として入り、
+  // 本来の相手を room_full で締め出すことになる。
+  test("参加者が 1 人でも join を促さない", () => {
+    const r = j("say", oneParticipant(), "--text", "x", "--advanced", "true", "--as", "carol");
+    assert.equal(r.error, "not_a_participant");
+    assert.doesNotMatch(r.hint!, /join してください/);
+  });
+
+  test("room_id の取り違えに触れる", () => {
+    const r = j("say", oneParticipant(), "--text", "x", "--advanced", "true", "--as", "carol");
+    assert.match(r.hint!, /room_id/);
+  });
+});
+
+describe("待機の上限に達したときの案内", () => {
+  const exhaust = (room: string, as: string): Reply => {
+    let last: Reply = {} as Reply;
+    for (let i = 0; i < 7; i++) {
+      last = j("receive", room, "--timeout", "1", "--as", as);
+      if (last.status === "closed") break;
+    }
+    return last;
+  };
+
+  test("参加待ちで尽きたときは名乗りの取り違えにも触れる", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+    assert.match(exhaust(room, "alice").hint!, /--as/);
+  });
+
+  // 2 人揃っている場面では、名乗りを疑えという助言は正しくない。
+  test("会話中に尽きたときは名乗りに触れない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    assert.doesNotMatch(exhaust(room, "alpha").hint!, /--as/);
   });
 });

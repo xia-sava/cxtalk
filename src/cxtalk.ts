@@ -319,8 +319,10 @@ const notAParticipant = (id: string, as: string, participants: string[]): void =
       (full
         ? `このどちらかとして続けるつもりなら --as にその名前を指定してください。` +
           `2 人が埋まっているため、別の名前では join できません。`
-        : `名乗り分けをしているなら --as にその名前を指定し、` +
-          `まだ入っていないなら join してください。`),
+        : // join を勧めない。room_id を取り違えていた場合、無関係のルームへ
+          // 2 人目として入り、本来の相手を room_full で締め出すことになる。
+          `名乗り分けをしているなら --as にその名前を指定してください。` +
+          `そうでなければ room_id を取り違えている可能性があります。ユーザーに確認してください。`),
   });
 };
 
@@ -356,6 +358,31 @@ const CLOSING_HINT =
 /** 会話を終えて報告に移らせる hint。原文の場所を必ず添える。 */
 const reportHint = (id: string, head: string): string =>
   `${head}${CLOSING_HINT}原文は ${logPath(id)} に残っています。報告にこの場所を添えてください。`;
+
+/**
+ * 閉じたルームに残った未読を返し、既読にする。
+ * 報告へ移る経路は複数あり、一部だけが未読を渡す形だと、
+ * 受け取らなかった側は未読が無いものとして相手の最終見解を読まずに要約する。
+ */
+const drainUnread = (room: Room, as: string): Message[] => {
+  const participant = room.participants[as];
+  if (!participant) return [];
+  const messages = readMessages(room.id, participant.last_read);
+  if (messages.length > 0) {
+    participant.last_read = latestSeq(room.id);
+    writeRoom(room);
+  }
+  return messages;
+};
+
+/** 閉じたルームの報告を促す hint。未読があれば読ませてから要約させる。 */
+const closedHint = (id: string, unread: number, head = "ルームは閉じています。"): string =>
+  reportHint(
+    id,
+    unread > 0
+      ? `${head}未読が ${unread} 件あります。相手の最後の見解を読んでから要約してください。`
+      : head,
+  );
 
 const cmdOpen = (flags: Flags): void => {
   const as = selfName(flags);
@@ -405,7 +432,7 @@ const joinHint = (
   next: Next,
   alone: boolean,
 ): string => {
-  if (room.status === "closed") return reportHint(room.id, "このルームは閉じています。");
+  if (room.status === "closed") return closedHint(room.id, unread, "このルームは閉じています。");
   const head = `未読 ${unread} 件。${rejoined ? "再入場です。" : "参加しました。"}`;
   if (alone) return `${head}相手はまだ参加していません。receive を呼べば参加を待てます。`;
   return next === "say"
@@ -479,15 +506,17 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     return;
   }
   if (room.status === "closed") {
+    const messages = drainUnread(room, as);
     emit({
       ok: false,
       error: "closed",
       room_id: id,
       status: "closed",
       closed_reason: room.closed_reason,
+      messages,
       log_path: logPath(id),
       next: "report",
-      hint: reportHint(id, "このルームは閉じています。"),
+      hint: closedHint(id, messages.length, "このルームは閉じています。"),
     });
     return;
   }
@@ -497,10 +526,12 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       error: "alone_in_room",
       room_id: id,
       participants: Object.keys(room.participants),
-      next: "ask_user",
+      // 相手を待てば解決する。人間を呼ぶと、席を外している間は会話が止まる。
+      next: "receive",
       hint:
         "このルームにはまだ自分しかいません。相手が参加するまで発言できません。" +
-        "receive を呼べば参加を待てます。",
+        "receive を呼べば参加を待てます。待っても来ない場合は、" +
+        "--as の付け忘れで相手と同じ名前になっていないかを確かめてください。",
     });
     return;
   }
@@ -595,11 +626,7 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   const participant = room.participants[as];
 
   if (room.status === "closed") {
-    const messages = readMessages(id, participant?.last_read ?? 0);
-    if (participant && messages.length > 0) {
-      participant.last_read = seq;
-      writeRoom(room);
-    }
+    const messages = drainUnread(room, as);
     return {
       ok: true,
       status: "closed",
@@ -608,12 +635,7 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
       messages,
       log_path: logPath(id),
       next: "report",
-      hint: reportHint(
-        id,
-        messages.length > 0
-          ? `ルームは閉じています。未読が ${messages.length} 件あります。相手の最後の見解を読んでから要約してください。`
-          : "ルームは閉じています。",
-      ),
+      hint: closedHint(id, messages.length),
     };
   }
 
@@ -730,7 +752,8 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
       hint: reportHint(
         id,
         awaitingJoin
-          ? "待機の上限に達したためルームを閉じました。相手はまだ参加していません。room_id が伝わっていない可能性があります。"
+          ? "待機の上限に達したためルームを閉じました。相手はまだ参加していません。" +
+            "room_id が伝わっていないか、--as の付け忘れで相手と同じ名前になっている可能性があります。"
           : "待機の上限に達したためルームを閉じました。相手が停止したのか、まだ考えているのかは区別できません。" +
               "どちらであるかを断定せず、応答が得られなかった事実として報告してください。",
       ),
@@ -775,6 +798,7 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   const next: Next =
     room.status === "closed" ? "report" : !alone && turn === as ? "say" : "receive";
   const standing = `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`;
+  const unread = unreadOf(room);
   emit({
     ok: true,
     room_id: id,
@@ -782,14 +806,21 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
     topic: room.topic,
     turn,
     hops_left: hopsLeft,
-    unread: unreadOf(room),
+    unread,
     participants: Object.keys(room.participants),
     last_activity_at: room.last_activity_at,
     log_path: logPath(id),
     next,
     hint:
       room.status === "closed"
-        ? reportHint(id, "このルームは閉じています。")
+        ? // 既読にしないコマンドなので、読む手段を添える。
+          reportHint(
+            id,
+            (unread[as] ?? 0) > 0
+              ? `このルームは閉じています。未読が ${unread[as]} 件あります。` +
+                  `receive で読んでから要約してください。`
+              : "このルームは閉じています。",
+          )
         : alone
           ? "相手はまだ参加していません。receive を呼べば参加を待てます。"
           : next === "say"
@@ -820,15 +851,18 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   }
   const alreadyClosed = room.status === "closed";
   if (!alreadyClosed) closeRoom(room, reason as ClosedReason);
+  const messages = drainUnread(room, as);
   emit({
     ok: true,
     room_id: id,
     closed_reason: room.closed_reason,
     hops_used: hopsOf(latestSeq(id)),
+    messages,
     log_path: logPath(id),
     next: "report",
-    hint: reportHint(
+    hint: closedHint(
       id,
+      messages.length,
       alreadyClosed ? "このルームは既に閉じています。" : "ルームを閉じました。",
     ),
   });
