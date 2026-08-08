@@ -128,10 +128,45 @@ const emit = (payload: Record<string, unknown>): void => {
   console.log(JSON.stringify(payload));
 };
 
+/** 欠けていれば 0 として読む。書かれていて 0 以上の整数でなければ断る。 */
+const countOf = (value: unknown, label: string): number => {
+  if (value === undefined) return 0;
+  if (!Number.isInteger(value) || (value as number) < 0) {
+    throw new Error(`${label} が 0 以上の整数ではありません。`);
+  }
+  return value as number;
+};
+
+/**
+ * 状態ファイルを読む。人間が書き換える手順を案内している以上、使える形かをここで確かめる。
+ *
+ * 欠けていて安全な既定があるものは寄せ、無いものと解釈できない値は断る。
+ * 寄せてよいのは、結果が「まだ読んでいない」「まだ数えていない」に倒れるものだけ。
+ * 上限や先手をこちらで決めると、歯止めや発言権が黙って変わる。
+ */
 const readRoom = (id: string): Room | null => {
   const path = roomJsonPath(id);
   if (!existsSync(path)) return null;
-  return JSON.parse(readFileSync(path, "utf8")) as Room;
+  const room = JSON.parse(readFileSync(path, "utf8")) as Room;
+  if (room.status !== "open" && room.status !== "closed") {
+    throw new Error("status が open でも closed でもありません。");
+  }
+  if (!Number.isInteger(room.max_hops) || room.max_hops < 1) {
+    throw new Error("max_hops が 1 以上の整数ではありません。");
+  }
+  if (typeof room.opener !== "string" || room.opener === "") {
+    throw new Error("opener に参加者の名前がありません。");
+  }
+  if (typeof room.participants !== "object" || room.participants === null) {
+    throw new Error("participants がありません。");
+  }
+  room.stale_streak = countOf(room.stale_streak, "stale_streak");
+  for (const [name, participant] of Object.entries(room.participants)) {
+    participant.last_read = countOf(participant.last_read, `${name} の last_read`);
+    participant.timeouts = countOf(participant.timeouts, `${name} の timeouts`);
+    participant.join_timeouts = countOf(participant.join_timeouts, `${name} の join_timeouts`);
+  }
+  return room;
 };
 
 /**
@@ -212,10 +247,9 @@ const bothJoined = (room: Room): boolean =>
  * 間で落ちたときに誰も発言できないルームが残る。
  */
 const turnOf = (room: Room, seq: number): string => {
-  const names = Object.keys(room.participants);
-  const opener = room.opener ?? names[0] ?? "";
+  const opener = room.opener;
   if (seq % 2 === 0) return opener;
-  return names.find((name) => name !== opener) ?? opener;
+  return Object.keys(room.participants).find((name) => name !== opener) ?? opener;
 };
 
 const hopsLeftOf = (room: Room, seq: number): number =>
@@ -362,7 +396,16 @@ const notAParticipant = (id: string, as: string, room: Room): void => {
   emit(notAParticipantReply(id, as, room));
 };
 
-const corruptRoom = (id: string): void => {
+/**
+ * 読めない理由。JSON として読めない場合の原因は解析器が英語で返すため、そこは固定文に畳む。
+ * 値が使えない場合は検証を書いた側の文をそのまま渡す。
+ */
+const reasonOf = (error: unknown): string =>
+  error instanceof SyntaxError || !(error instanceof Error)
+    ? "room.json を JSON として読み取れません。"
+    : `room.json の ${error.message}`;
+
+const corruptRoom = (id: string, reason: string): void => {
   emit({
     ok: false,
     error: "corrupt_room",
@@ -370,7 +413,7 @@ const corruptRoom = (id: string): void => {
     log_path: logPath(id),
     next: "ask_user",
     hint:
-      `ルーム ${id} の状態を読み取れません。room.json が壊れています。` +
+      `ルーム ${id} の状態を読み取れません。${reason}` +
       `${logPath(id)} をユーザーに確認してもらってください。`,
   });
 };
@@ -381,8 +424,8 @@ const loadRoom = (id: string): Room | null => {
     const room = readRoom(id);
     if (!room) notFound(id);
     return room;
-  } catch {
-    corruptRoom(id);
+  } catch (error) {
+    corruptRoom(id, reasonOf(error));
     return null;
   }
 };
@@ -794,10 +837,9 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   }
 
   // 参加を待っている間の時間切れは、会話中の長考とは別に数える。
-  // 該当のフィールドを持たない状態ファイルもあるため、0 から数え直せる形で足す。
   const awaitingJoin = !bothJoined(room);
-  if (awaitingJoin) participant.join_timeouts = (participant.join_timeouts ?? 0) + 1;
-  else participant.timeouts = (participant.timeouts ?? 0) + 1;
+  if (awaitingJoin) participant.join_timeouts += 1;
+  else participant.timeouts += 1;
   writeRoom(room);
   const retriesLeft = RETRY_LIMIT - (awaitingJoin ? participant.join_timeouts : participant.timeouts);
 

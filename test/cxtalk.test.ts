@@ -39,6 +39,14 @@ type Reply = {
 
 type ParticipantState = { last_read: number; timeouts: number; join_timeouts: number };
 
+/** 人間が手で書き換える room.json。欠けた値や書き間違いを作れる形で持つ。 */
+type EditableRoom = {
+  max_hops?: number | string;
+  opener?: string;
+  status?: string;
+  participants: Record<string, Partial<Record<keyof ParticipantState, number | string>>>;
+};
+
 type Run = { out: string; err: string; code: number };
 
 let home: string;
@@ -1198,6 +1206,67 @@ describe("壊れた room.json", () => {
   test("ls は読めないルームを挙げる", () => {
     const room = broken();
     assert.deepEqual(j("ls").unreadable, [room]);
+  });
+
+  test("構文の問題として伝える", () => {
+    assert.match(j("status", broken(), "--as", "alpha").hint!, /JSON として読み取れません/);
+  });
+});
+
+describe("状態ファイルの値", () => {
+  /** 人間が room.json を手で直した状態を作る。上限を変える唯一の手段として案内している。 */
+  const patched = (patch: (state: EditableRoom) => void): string => {
+    const room = opened();
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8")) as EditableRoom;
+    patch(state);
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+    return room;
+  };
+
+  /** こちらで決め直すと歯止めや発言権が黙って変わる値。欠けていても書き間違いでも断る。 */
+  const rejected: [string, (state: EditableRoom) => void][] = [
+    ["max_hops が整数でない", (s) => void (s.max_hops = "5往復")],
+    ["max_hops が欠けている", (s) => void delete s.max_hops],
+    ["opener が欠けている", (s) => void delete s.opener],
+    ["status が open でも closed でもない", (s) => void (s.status = "paused")],
+    ["last_read が整数でない", (s) => void (s.participants.alpha.last_read = "3")],
+  ];
+
+  for (const [label, patch] of rejected) {
+    test(`${label} なら読み取れないものとして扱う`, () => {
+      const r = j("status", patched(patch), "--as", "alpha");
+      assert.equal(r.ok, false);
+      assert.equal(r.error, "corrupt_room");
+      assert.equal(r.next, "ask_user");
+    });
+  }
+
+  test("断る理由を hint に書く", () => {
+    const room = patched((s) => void (s.max_hops = "5往復"));
+    assert.match(j("status", room, "--as", "alpha").hint!, /max_hops が 1 以上の整数ではありません/);
+  });
+
+  test("上限が読めないルームでは会話を進めない", () => {
+    const room = patched((s) => void (s.max_hops = "5往復"));
+    assert.equal(say(room, "alpha", "ひとつめ", true).error, "corrupt_room");
+  });
+
+  test("last_read が欠けていれば全部未読として読む", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8")) as EditableRoom;
+    delete state.participants.beta.last_read;
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+    assert.equal(j("status", room, "--as", "beta").unread!.beta, 1);
+  });
+
+  test("timeouts が欠けていれば 0 から数え直す", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8")) as EditableRoom;
+    delete state.participants.alpha.timeouts;
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+    assert.equal(j("receive", room, "--timeout", "1", "--as", "alpha").retries_left, 5);
   });
 });
 
