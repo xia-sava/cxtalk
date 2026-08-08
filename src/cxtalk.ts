@@ -319,26 +319,31 @@ const latestSeq = (id: string): number => {
  * そのまま渡せば自分の書いたものを相手の見解として読ませることになる。
  * 読む側も数える側もここを通す。同じ条件が各所に散ると、片方だけが直る。
  */
+const unreadIn = (files: string[], after: number, as: string): string[] =>
+  files.filter((file) => seqOfFile(file) > after && senderOfFile(file) !== as);
+
 const unreadFiles = (id: string, after: number, as: string): string[] =>
-  messageFiles(id).filter((file) => seqOfFile(file) > after && senderOfFile(file) !== as);
+  unreadIn(messageFiles(id), after, as);
+
+const readMessage = (id: string, file: string): Message => {
+  const raw = readFileSync(join(messagesDir(id), file), "utf8");
+  const headEnd = raw.indexOf("\n---\n");
+  // ヘッダが無いと日時も本文も別の位置から切り出され、
+  // 参加者の名前で、その人が書いていない発言として返ることになる。
+  if (!raw.startsWith("---\nat: ") || headEnd < 0) {
+    throw invalidMessage(id, `${file} が発言の形をしていません。`);
+  }
+  const body = raw.slice(headEnd + 5);
+  return {
+    seq: seqOfFile(file),
+    from: senderOfFile(file),
+    at: raw.slice(raw.indexOf("at: ") + 4, headEnd),
+    text: body.endsWith("\n") ? body.slice(0, -1) : body,
+  };
+};
 
 const readMessages = (id: string, after: number, as: string): Message[] =>
-  unreadFiles(id, after, as).map((file) => {
-    const raw = readFileSync(join(messagesDir(id), file), "utf8");
-    const headEnd = raw.indexOf("\n---\n");
-    // ヘッダが無いと日時も本文も別の位置から切り出され、
-    // 参加者の名前で、その人が書いていない発言として返ることになる。
-    if (!raw.startsWith("---\nat: ") || headEnd < 0) {
-      throw invalidMessage(id, `${file} が発言の形をしていません。`);
-    }
-    const body = raw.slice(headEnd + 5);
-    return {
-      seq: seqOfFile(file),
-      from: senderOfFile(file),
-      at: raw.slice(raw.indexOf("at: ") + 4, headEnd),
-      text: body.endsWith("\n") ? body.slice(0, -1) : body,
-    };
-  });
+  unreadFiles(id, after, as).map((file) => readMessage(id, file));
 
 const writeMessage = (id: string, seq: number, from: string, text: string): void => {
   const path = join(messagesDir(id), `${String(seq).padStart(SEQ_DIGITS, "0")}-${from}.md`);
@@ -576,15 +581,25 @@ const reportHint = (id: string, head: string): string =>
  *
  * 見せるものと既読の位置は別の量として扱う。自分の発言しか残っていない場合、
  * 返すものは無いが位置は進める。進めないと消えない未読として残り続ける。
+ *
+ * 一覧は 1 度しか数えない。2 度数えると、その間に増えた発言をどちらへ倒すかという
+ * 問いが生まれ、倒し方を間違えると返さないまま既読になる。数えなければ問いも無い。
  */
-const drainUnread = (room: Room, participant: Participant, as: string): Message[] => {
-  const latest = latestSeq(room.id);
-  const messages = readMessages(room.id, participant.last_read, as);
+const drainUnread = (
+  room: Room,
+  participant: Participant,
+  as: string,
+): { messages: Message[]; latest: number } => {
+  const files = messageFiles(room.id);
+  const latest = files.length === 0 ? 0 : seqOfFile(files[files.length - 1]);
+  const messages = unreadIn(files, participant.last_read, as).map((file) =>
+    readMessage(room.id, file),
+  );
   if (latest > participant.last_read) {
     participant.last_read = latest;
     writeRoom(room);
   }
-  return messages;
+  return { messages, latest };
 };
 
 /** 閉じたルームの報告を促す hint。未読があれば読ませてから要約させる。 */
@@ -602,7 +617,7 @@ const closedReply = (
   participant: Participant,
   as: string,
 ): Record<string, unknown> => {
-  const messages = drainUnread(room, participant, as);
+  const { messages } = drainUnread(room, participant, as);
   return {
     ok: true,
     status: "closed",
@@ -697,11 +712,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     return;
   }
   if (!rejoined) room.participants[as] = newParticipant();
-  // 既読の位置は、返した内容より古い側へ倒す。2 回の readdir の間に相手が発言すると、
-  // 逆の順序では返さないまま既読になり、その発言はどのコマンドでも読めなくなる。
-  const seq = latestSeq(id);
-  const messages = readMessages(id, room.participants[as].last_read, as);
-  room.participants[as].last_read = seq;
+  const { messages, latest: seq } = drainUnread(room, room.participants[as], as);
   if (room.status === "open") room.last_activity_at = nowIso();
   writeRoom(room);
   const turn = turnOf(room, seq);
@@ -739,7 +750,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     return;
   }
   if (room.status === "closed") {
-    const messages = drainUnread(room, room.participants[as], as);
+    const { messages } = drainUnread(room, room.participants[as], as);
     emit({
       ok: false,
       error: "closed",
@@ -870,14 +881,12 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   // 入口で確かめた後に呼ばれる。それでも欠けていたときに黙って待つと、
   // 待機の上限まで進んだ末に、応答が無かったという記録だけが残る。
   if (!participant) return notAParticipantReply(id, as, room);
-  const seq = latestSeq(id);
 
   if (room.status === "closed") return closedReply(room, participant, as);
 
   const seen = participant.last_read;
+  const { messages, latest: seq } = drainUnread(room, participant, as);
   if (seq > seen) {
-    const messages = readMessages(id, seen, as);
-    participant.last_read = seq;
     // 相手の応答が届いた時点で待ち直しになる。時間切れは往復のたびに起きるため、
     // 数え続けると応答している相手との会話が打ち切られる。
     if (messages.length > 0) participant.timeouts = 0;
@@ -1096,7 +1105,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   }
   const alreadyClosed = room.status === "closed";
   closeRoom(room, reason);
-  const messages = drainUnread(room, room.participants[as], as);
+  const { messages } = drainUnread(room, room.participants[as], as);
   emit({
     ok: true,
     room_id: id,
