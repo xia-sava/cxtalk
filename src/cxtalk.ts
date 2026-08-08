@@ -774,18 +774,19 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     await sleep(POLL_INTERVAL_MS);
   }
 
+  // 最後の待機と時間切れの処理の間にも相手は動く。ここで見ないと、
+  // 届いた発言も閉じられたルームも、応答が無かったという記録に変わる。
+  const settled = pollOnce(id, as);
+  if (settled) {
+    emit(settled);
+    return;
+  }
+
   const room = loadRoom(id);
   if (!room) return;
   const participant = room.participants[as];
   if (!participant) {
     notAParticipant(id, as, room);
-    return;
-  }
-
-  // 待っている間に相手が閉じていることがある。理由を決め打つと、
-  // 上限まで話し切った会話に応答が無かったという記録が残る。
-  if (room.status === "closed") {
-    emit(closedReply(room, participant, as));
     return;
   }
 
