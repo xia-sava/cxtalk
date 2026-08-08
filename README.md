@@ -55,47 +55,36 @@ SPEC.md                          仕様
 
 ## 導入
 
-`~/.claude/skills/cxtalk` を本 repo への symlink にする。
-次のセッションから `cxtalk@skills-dir` として読み込まれ、
+どちらの形でも次のセッションから skill が読み込まれ、
 `cxtalk` コマンドが Bash ツールの `PATH` に入る。
-
-```
-ln -s /path/to/cxtalk ~/.claude/skills/cxtalk
-```
-
-repo をその場で読むため、変更は次のセッションに反映される。
 
 ### marketplace から入れる
 
-この repo は marketplace を兼ねている。別の環境へ配る場合はこちらを使う。
+この repo は marketplace を兼ねている。
 
 ```
 /plugin marketplace add xia-sava/cxtalk
 /plugin install cxtalk@xia-sava
 ```
 
-こちらはプラグインキャッシュへ複製されるため、repo の変更を反映するには
+プラグインキャッシュへ複製されるため、更新するには
 `/plugin marketplace update` と `/plugin update cxtalk` が要る。
+
+### skills に直接置く
+
+`~/.claude/skills/` の下へ clone する。
+
+```
+git clone https://github.com/xia-sava/cxtalk ~/.claude/skills/cxtalk
+```
+
+キャッシュへの複製を挟まないため、repo を更新すれば次のセッションに反映される。
+`cxtalk@skills-dir` として読み込まれる。このツール自体に手を入れる場合はこちら。
 
 ### 実行許可の登録
 
 settings に `cxtalk` の実行許可を登録する。
 登録がないと往復のたびに許可を求められ、自走が成立しない。
-
-### `~/.claude/skills/` は git 追跡対象
-
-`~/.claude` が git 管理されている場合、`.gitignore` の allowlist に `!/skills/` が
-含まれていることがある。この状態で `~/.claude/skills/cxtalk` を置くと、
-本 repo と `~/.claude` の双方で同じものを管理することになる。
-
-正を本 repo に置く場合は、`~/.claude/.gitignore` に除外を追加する。
-
-```
-/skills/cxtalk
-```
-
-末尾にスラッシュを付けない。symlink はディレクトリとして扱われないことがあり、
-付けると除外が効かない。
 
 ## 開発
 
