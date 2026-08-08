@@ -96,6 +96,16 @@ const bin = (...args: string[]): Run =>
   });
 
 /**
+ * repo を作業ディレクトリにして、シェル自身にパスを綴らせる。
+ * $PWD はそのシェルの名前空間の形になるため、環境ごとの表記を test が持たずに済む。
+ */
+const inRepo = (script: string, env: Record<string, string> = {}): Run =>
+  viaBash(["-c", script], {
+    cwd: ROOT,
+    env: { ...process.env, CXTALK_HOME: home, ...env },
+  });
+
+/**
  * Stop hook を、Claude Code がするのと同じく標準入力の JSON で起動する。
  * 名乗りは作業ディレクトリから決まるため、参加者名のディレクトリを cwd に渡す。
  */
@@ -1780,11 +1790,25 @@ describe("上限に達する発言が未読を捨てない", () => {
 });
 
 describe("利用者が叩く入口", () => {
-  test("bin 経由でも JSON を返す", () => {
-    assert.equal(JSON.parse(bin("ls").out).ok, true);
-  });
+  /**
+   * シェルがラッパーを起動するとき、インタプリタへ渡すのはスクリプト自身のパスであり、
+   * その形は呼び方で変わる。名前空間の食い違う環境では開けない形が届くため、
+   * シェルを並べるのではなく、届きうる形を並べて確かめる。
+   */
+  const invocations: [string, () => Run][] = [
+    ["その環境が native と見なす絶対パス", () => bin("ls")],
+    ["シェルの名前空間の絶対パス", () => inRepo('"$PWD/bin/cxtalk" ls')],
+    ["パスの変換が止められた状態", () => inRepo('"$PWD/bin/cxtalk" ls', { MSYS_NO_PATHCONV: "1" })],
+    ["相対パス", () => inRepo("./bin/cxtalk ls")],
+  ];
 
-  test("bin 経由なら警告を標準エラーに出さない", () => {
+  for (const [label, invoke] of invocations) {
+    test(`${label}で叩いても実装に届く`, () => {
+      assert.equal(JSON.parse(invoke().out).ok, true);
+    });
+  }
+
+  test("警告を標準エラーに出さない", () => {
     assert.equal(bin("ls").err, "");
   });
 

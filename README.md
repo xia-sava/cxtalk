@@ -35,12 +35,13 @@ room_id を渡してから相手のセッションで実行するまでが空く
 ## 要件
 
 - Node.js 24 以上。型注釈を含む `.ts` をそのまま実行する
-- bash。コマンドと Stop hook が bash スクリプトである
+- bash。コマンドと Stop hook が bash スクリプトである。
+  cmd.exe と PowerShell はシェバンを解釈しないため、そこからは直接実行できない
 - Claude Code
 
 依存パッケージは無い。ビルドも要らない。
 
-動作を確認しているのは Windows 11 と git bash の組み合わせのみ。
+動作を確認しているのは Windows 11 の git bash と Cygwin。
 macOS と Linux では試していない。
 
 ## 構成

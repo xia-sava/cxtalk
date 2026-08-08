@@ -1,3 +1,8 @@
 #!/bin/bash
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# シェルの名前空間の絶対パスを node は開けない。変換器は PATH から探さず
+# 置き場所で呼ぶ。同名のものが複数あり、それぞれ自分の名前空間しか直せない。
+if [ -x /usr/bin/cygpath ]; then
+  root="$(/usr/bin/cygpath -m "$root")"
+fi
 exec node --disable-warning=ExperimentalWarning "$root/src/cxtalk.ts" "$@"
