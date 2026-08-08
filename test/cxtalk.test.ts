@@ -1369,7 +1369,7 @@ describe("状態ファイルの値", () => {
   // 名指しだけでは直せない。満たすべき条件まで書けているかを 1 件で確かめる。
   test("hint は値の名前だけでなく満たすべき条件も書く", () => {
     const room = patched((s) => void (s.max_hops = "5往復"));
-    assert.match(j("status", room, "--as", "alpha").hint!, /max_hops が 1 以上の整数ではありません/);
+    assert.match(j("status", room, "--as", "alpha").hint!, /max_hops が 1 以上 \d+ 以下の整数ではありません/);
   });
 
   test("閉じたルームの closed_reason が定義された値でなければ断る", () => {
@@ -1817,6 +1817,66 @@ describe("利用者が叩く入口", () => {
     const r = JSON.parse(bin("open", "--topic", TOPIC, "--as", "alpha").out);
     assert.equal(r.topic, TOPIC);
     assert.equal(r.as, "alpha");
+  });
+});
+
+describe("置き場と上限の値", () => {
+  const withHome = (value: string, ...args: string[]): Run => {
+    const r = spawnSync(
+      process.execPath,
+      ["--disable-warning=ExperimentalWarning", CLI, ...args],
+      { encoding: "utf8", cwd: home, env: { ...process.env, CXTALK_HOME: value } },
+    );
+    return { out: r.stdout ?? "", err: r.stderr ?? "", code: r.status ?? -1 };
+  };
+
+  // 同じ設定でも呼ぶ場所で置き場が変わる。開いたルームが見つからなくなる。
+  test("相対パスの置き場は断る", () => {
+    const r = JSON.parse(withHome("./ctk", "open", "--topic", TOPIC, "--as", "alpha").out);
+    assert.equal(r.error, "invalid_home");
+    assert.equal(r.next, "ask_user");
+  });
+
+  test("断る理由に設定されている値を書く", () => {
+    assert.match(JSON.parse(withHome("./ctk", "ls").out).hint, /\.\/ctk/);
+  });
+
+  test("check は JSON を足さず終了コードで答える", () => {
+    const r = withHome("./ctk", "check", "--as", "alpha");
+    assert.equal(r.code, 2);
+    assert.equal(r.out, "");
+  });
+
+  test("絶対パスの置き場は通る", () => {
+    assert.equal(JSON.parse(withHome(join(home, "ctk"), "ls").out).ok, true);
+  });
+
+  // 通し番号は 4 桁でファイル名に綴る。桁を超えると並び順も発言者も変わる。
+  test("桁に収まらない往復数は断る", () => {
+    const r = j("open", "--topic", TOPIC, "--max-hops", "5000", "--as", "alpha");
+    assert.equal(r.error, "invalid_argument");
+    assert.match(r.hint!, /4999/);
+  });
+
+  test("桁に収まる往復数は通る", () => {
+    assert.equal(j("open", "--topic", TOPIC, "--max-hops", "4999", "--as", "alpha").max_hops, 4999);
+  });
+
+  test("書き換えた往復数も同じ範囲で受ける", () => {
+    const room = opened();
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8")) as EditableRoom;
+    state.max_hops = 5000;
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+    assert.equal(j("status", room, "--as", "alpha").error, "corrupt_room");
+  });
+
+  // 先の時刻だと無音の長さが負になり、掃除が永久に効かない。
+  test("先の時刻を指す最終更新は断る", () => {
+    const room = opened();
+    idleFor(room, -60);
+    const r = j("status", room, "--as", "alpha");
+    assert.equal(r.error, "corrupt_room");
+    assert.match(r.hint!, /先の時刻/);
   });
 });
 

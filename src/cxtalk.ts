@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
 
 type Next = "say" | "receive" | "report" | "ask_user" | "retry";
@@ -38,6 +38,14 @@ const IDLE_MINUTES = 30;
 const POLL_INTERVAL_MS = 200;
 const MAX_PARTICIPANTS = 2;
 const NAME_MAX_LENGTH = 64;
+
+/**
+ * 通し番号をファイル名に綴る桁数。桁を超えると並び順も番号も発言者も変わるため、
+ * 往復の上限はこの桁に収まる範囲で決める。1 往復で 2 件書く。
+ */
+const SEQ_DIGITS = 4;
+const MAX_SEQ = 10 ** SEQ_DIGITS - 1;
+const MAX_HOPS = Math.floor(MAX_SEQ / 2);
 
 /** コマンドごとに受け付けるフラグ。打ち間違いを既定値として飲み込まないために持つ。 */
 const KNOWN_FLAGS: Record<string, readonly string[]> = {
@@ -199,8 +207,9 @@ const readRoom = (id: string): Room | null => {
   } else if (room.closed_reason !== null) {
     throw invalidState("開いたルームに closed_reason があります。");
   }
-  if (!Number.isInteger(room.max_hops) || room.max_hops < 1) {
-    throw invalidState("max_hops が 1 以上の整数ではありません。");
+  // 人が書き換える唯一の手段がここなので、開くときと同じ範囲で受ける。
+  if (!Number.isInteger(room.max_hops) || room.max_hops < 1 || room.max_hops > MAX_HOPS) {
+    throw invalidState(`max_hops が 1 以上 ${MAX_HOPS} 以下の整数ではありません。`);
   }
   // 日時として読めないと無音の長さが数えられず、掃除が効かないまま開いたルームが残る。
   // 日時は文字列で持つ。数値や真偽値も Date は受けるが、どれも 1970 になり掃除が即座に効く。
@@ -209,6 +218,11 @@ const readRoom = (id: string): Room | null => {
     Number.isNaN(new Date(room.last_activity_at).getTime())
   ) {
     throw invalidState("last_activity_at が日時として読み取れません。");
+  }
+  // 先の時刻だと無音の長さが負になり、掃除が永久に効かない。書き込むのは常に今なので、
+  // 先を指しているのは手で書き換えたか時計が戻ったかで、どちらも人が直す。
+  if (new Date(room.last_activity_at).getTime() > Date.now()) {
+    throw invalidState("last_activity_at が先の時刻を指しています。");
   }
   if (
     typeof room.participants !== "object" ||
@@ -264,7 +278,7 @@ const newParticipant = (): Participant => ({ last_read: 0, timeouts: 0, join_tim
  * 発言のファイル名。通し番号と発言者をここから取り出し、発言権も往復数もそれに従うため、
  * 形の合わないものを数えると会話の状態が変わる。room.json より重い状態がここにある。
  */
-const MESSAGE_FILE = /^(\d{4})-(.+)\.md$/;
+const MESSAGE_FILE = new RegExp(`^(\\d{${SEQ_DIGITS}})-(.+)\\.md$`);
 
 const isMessageFile = (file: string): boolean => {
   const match = MESSAGE_FILE.exec(file);
@@ -324,7 +338,7 @@ const readMessages = (id: string, after: number, as: string): Message[] =>
   });
 
 const writeMessage = (id: string, seq: number, from: string, text: string): void => {
-  const path = join(messagesDir(id), `${String(seq).padStart(4, "0")}-${from}.md`);
+  const path = join(messagesDir(id), `${String(seq).padStart(SEQ_DIGITS, "0")}-${from}.md`);
   writing(path, () => writeFileSync(path, `---\nat: ${nowIso()}\n---\n${text}\n`, "utf8"));
 };
 
@@ -375,11 +389,15 @@ const nextOf = (room: Room, as: string, seq: number): Next =>
       ? "say"
       : "receive";
 
-/** 1 以上の整数だけを受ける。不正なら null を返し、呼び出し側で断る。 */
-const positiveInt = (raw: string | undefined, fallback: number): number | null => {
+/** 1 以上 limit 以下の整数だけを受ける。不正なら null を返し、呼び出し側で断る。 */
+const positiveInt = (
+  raw: string | undefined,
+  fallback: number,
+  limit = Number.MAX_SAFE_INTEGER,
+): number | null => {
   if (raw === undefined) return fallback;
   const value = Number(raw);
-  return Number.isInteger(value) && value > 0 ? value : null;
+  return Number.isInteger(value) && value > 0 && value <= limit ? value : null;
 };
 
 const invalidArgument = (hint: string, id?: string): void => {
@@ -597,9 +615,9 @@ const cmdOpen = (flags: Flags): void => {
     invalidArgument("--topic は必須です。この会話で詰める論点を一つ渡してください。");
     return;
   }
-  const maxHops = positiveInt(flags["max-hops"], DEFAULT_MAX_HOPS);
+  const maxHops = positiveInt(flags["max-hops"], DEFAULT_MAX_HOPS, MAX_HOPS);
   if (maxHops === null) {
-    invalidArgument("--max-hops には 1 以上の整数を指定してください。");
+    invalidArgument(`--max-hops には 1 以上 ${MAX_HOPS} 以下の整数を指定してください。`);
     return;
   }
   const id = newRoomId();
@@ -1221,6 +1239,29 @@ const failed = (thrown: unknown): void => {
 const messageOf = (thrown: unknown): string =>
   thrown instanceof Error ? thrown.message : String(thrown);
 
+/**
+ * 相対パスは作業ディレクトリを基準に解決されるため、同じ設定でも呼ぶ場所で置き場が変わる。
+ * 寄せ先を決めても呼ぶ側の期待と食い違ったときに気づけないので、断る。
+ */
+const rejectRelativeHome = (): boolean => {
+  const home = process.env.CXTALK_HOME;
+  if (home === undefined || isAbsolute(home)) return false;
+  if (command === "check") {
+    process.exitCode = 2;
+    return true;
+  }
+  emit({
+    ok: false,
+    error: "invalid_home",
+    next: "ask_user",
+    hint:
+      `CXTALK_HOME に相対パス ${home} が設定されています。` +
+      `呼ぶ場所によって置き場が変わり、開いたルームが見つからなくなります。` +
+      `絶対パスに直すようユーザーに伝えてください。`,
+  });
+  return true;
+};
+
 // 引数の解釈も入口の内側に置く。手前に何かを残すと、そこだけ約束の外になる。
 let command = "";
 
@@ -1229,7 +1270,9 @@ try {
   const { positional, flags, error } = parsed;
   command = parsed.command;
 
-  if (error !== undefined) {
+  if (rejectRelativeHome()) {
+    // 置き場が決まらなければ、どのコマンドも意味のある答えを返せない。
+  } else if (error !== undefined) {
     // check は終了コードで答える設計なので、値の欠落も安全側の 2 に倒す。
     if (command === "check") process.exitCode = 2;
     else invalidArgument(error);
