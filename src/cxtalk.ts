@@ -193,6 +193,13 @@ const selfName = (flags: Flags): string => flags.as ?? basename(process.cwd());
 const hopsOf = (seq: number): number => Math.ceil(seq / 2);
 
 /**
+ * 2 人揃っているか。発言も待機も、揃うまでは意味を持たない。
+ * 同じ数え方が各所に散ると、参加者の扱いを変えるときに探し歩くことになる。
+ */
+const bothJoined = (room: Room): boolean =>
+  Object.keys(room.participants).length >= MAX_PARTICIPANTS;
+
+/**
  * 発言権は seq から導く。先手が偶数番、後手が奇数番を受け持つ。
  * 状態として持つと、発言の記録と発言権の受け渡しが別々の書き込みになり、
  * 間で落ちたときに誰も発言できないルームが残る。
@@ -217,6 +224,17 @@ const FINAL_TURN_NOTE =
 /** 発言を促す hint。上限に達する発言なら、書く前にそう伝える。 */
 const sayHint = (room: Room, seq: number, head: string): string =>
   isFinalTurn(room, seq) ? `${head}${FINAL_TURN_NOTE}` : head;
+
+/**
+ * 状態から次の行動を決める。相手がいないルームでは say が断られるため示さない。
+ * 同じ状態を説明する join と status で共有する。
+ */
+const nextOf = (room: Room, as: string, seq: number): Next =>
+  room.status === "closed"
+    ? "report"
+    : bothJoined(room) && turnOf(room, seq) === as
+      ? "say"
+      : "receive";
 
 /** 1 以上の整数だけを受ける。不正なら null を返し、呼び出し側で断る。 */
 const positiveInt = (raw: string | undefined, fallback: number): number | null => {
@@ -305,24 +323,30 @@ const notFound = (id: string): void => {
   });
 };
 
-const notAParticipant = (id: string, as: string, participants: string[]): void => {
-  const full = participants.length >= MAX_PARTICIPANTS;
+/** 参加していない名前への案内。断るコマンドと状態だけ返すコマンドで共有する。 */
+const notAParticipantHint = (as: string, room: Room): string => {
+  const participants = Object.keys(room.participants);
+  return (
+    `${as} はこのルームに参加していません。会話の読み書きは参加者に限られます。` +
+    `参加しているのは ${participants.join(" と ")} です。` +
+    (bothJoined(room)
+      ? `このどちらかとして続けるつもりなら --as にその名前を指定してください。` +
+        `2 人が埋まっているため、別の名前では join できません。`
+      : // join を勧めない。room_id を取り違えていた場合、無関係のルームへ
+        // 2 人目として入り、本来の相手を room_full で締め出すことになる。
+        `名乗り分けをしているなら --as にその名前を指定してください。` +
+        `そうでなければ room_id を取り違えている可能性があります。ユーザーに確認してください。`)
+  );
+};
+
+const notAParticipant = (id: string, as: string, room: Room): void => {
   emit({
     ok: false,
     error: "not_a_participant",
     room_id: id,
-    participants,
+    participants: Object.keys(room.participants),
     next: "ask_user",
-    hint:
-      `${as} はこのルームに参加していません。会話の読み書きは参加者に限られます。` +
-      `参加しているのは ${participants.join(" と ")} です。` +
-      (full
-        ? `このどちらかとして続けるつもりなら --as にその名前を指定してください。` +
-          `2 人が埋まっているため、別の名前では join できません。`
-        : // join を勧めない。room_id を取り違えていた場合、無関係のルームへ
-          // 2 人目として入り、本来の相手を room_full で締め出すことになる。
-          `名乗り分けをしているなら --as にその名前を指定してください。` +
-          `そうでなければ room_id を取り違えている可能性があります。ユーザーに確認してください。`),
+    hint: notAParticipantHint(as, room),
   });
 };
 
@@ -449,7 +473,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   if (!room) return;
   sweepIdle(room);
   const rejoined = as in room.participants;
-  if (!rejoined && Object.keys(room.participants).length >= MAX_PARTICIPANTS) {
+  if (!rejoined && bothJoined(room)) {
     emit({
       ok: false,
       error: "room_full",
@@ -470,11 +494,9 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   room.participants[as].last_read = seq;
   if (room.status === "open") room.last_activity_at = nowIso();
   writeRoom(room);
-  const closed = room.status === "closed";
   const turn = turnOf(room, seq);
-  // 相手がいないルームでは say が断られる。次の行動として示さない。
-  const alone = Object.keys(room.participants).length < MAX_PARTICIPANTS;
-  const next: Next = closed ? "report" : !alone && turn === as ? "say" : "receive";
+  const alone = !bothJoined(room);
+  const next = nextOf(room, as, seq);
   emit({
     ok: true,
     room_id: id,
@@ -502,7 +524,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   // 参加者かどうかを先に見る。閉じたルームを先に見ると、
   // 参加していない相手に会話の要約と原文の場所を渡すことになる。
   if (!(as in room.participants)) {
-    notAParticipant(id, as, Object.keys(room.participants));
+    notAParticipant(id, as, room);
     return;
   }
   if (room.status === "closed") {
@@ -520,7 +542,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     });
     return;
   }
-  if (Object.keys(room.participants).length < MAX_PARTICIPANTS) {
+  if (!bothJoined(room)) {
     emit({
       ok: false,
       error: "alone_in_room",
@@ -672,7 +694,7 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   }
 
   // 相手がまだ参加していない間は待ち続ける。
-  if (Object.keys(room.participants).length < MAX_PARTICIPANTS) return null;
+  if (!bothJoined(room)) return null;
 
   if (turnOf(room, seq) === as) {
     return {
@@ -710,7 +732,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   const opening = loadRoom(id);
   if (!opening) return;
   if (!(as in opening.participants)) {
-    notAParticipant(id, as, Object.keys(opening.participants));
+    notAParticipant(id, as, opening);
     return;
   }
   const timeout = positiveInt(flags.timeout, DEFAULT_TIMEOUT_SECONDS);
@@ -734,13 +756,13 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   if (!room) return;
   const participant = room.participants[as];
   if (!participant) {
-    notAParticipant(id, as, Object.keys(room.participants));
+    notAParticipant(id, as, room);
     return;
   }
 
   // 参加を待っている間の時間切れは、会話中の長考とは別に数える。
   // 該当のフィールドを持たない状態ファイルもあるため、0 から数え直せる形で足す。
-  const awaitingJoin = Object.keys(room.participants).length < MAX_PARTICIPANTS;
+  const awaitingJoin = !bothJoined(room);
   if (awaitingJoin) participant.join_timeouts = (participant.join_timeouts ?? 0) + 1;
   else participant.timeouts = (participant.timeouts ?? 0) + 1;
   writeRoom(room);
@@ -802,9 +824,8 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   const seq = latestSeq(id);
   const turn = turnOf(room, seq);
   const hopsLeft = hopsLeftOf(room, seq);
-  const alone = Object.keys(room.participants).length < MAX_PARTICIPANTS;
-  const next: Next =
-    room.status === "closed" ? "report" : !alone && turn === as ? "say" : "receive";
+  const alone = !bothJoined(room);
+  const next = nextOf(room, as, seq);
   const standing = `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`;
   const unread = unreadOf(room);
   emit({
@@ -845,7 +866,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   const room = loadRoom(id);
   if (!room) return;
   if (!(as in room.participants)) {
-    notAParticipant(id, as, Object.keys(room.participants));
+    notAParticipant(id, as, room);
     return;
   }
   const reason = flags.reason ?? "manual";
