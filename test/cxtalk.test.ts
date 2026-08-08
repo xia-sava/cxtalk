@@ -33,7 +33,7 @@ type Reply = {
   participants?: string[];
   last_activity_at?: string;
   log_path?: string;
-  rooms?: { room_id: string; log_path: string }[];
+  rooms?: { room_id: string; log_path: string; status: string }[];
   unreadable?: string[];
 };
 
@@ -850,6 +850,24 @@ describe("読み書きは参加者に限る", () => {
     assert.equal(j("status", room, "--as", "stranger").ok, true);
     assert.equal(j("ls").ok, true);
   });
+
+  test("status は参加していない名前に会話の指示を出さない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    const r = j("status", room, "--as", "stranger");
+    assert.equal(r.next, "ask_user");
+    assert.match(r.hint!, /参加していません/);
+  });
+
+  test("閉じたルームでも参加していない名前には要約を求めない", () => {
+    const room = opened(1);
+    say(room, "alpha", "ひとつめ", true);
+    say(room, "beta", "ふたつめ", true);
+    const r = j("status", room, "--as", "stranger");
+    assert.equal(r.status, "closed");
+    assert.equal(r.next, "ask_user");
+    assert.doesNotMatch(r.hint!, /要約/);
+  });
 });
 
 describe("参加者名の検証", () => {
@@ -873,6 +891,13 @@ describe("参加者名の検証", () => {
 
   test("普通の名前は通る", () => {
     assert.equal(j("open", "--topic", TOPIC, "--as", "backend").ok, true);
+  });
+
+  test("status も使えない名前を断る", () => {
+    const room = opened();
+    const r = j("status", room, "--as", "../escape");
+    assert.equal(r.ok, false);
+    assert.equal(r.error, "invalid_argument");
   });
 });
 
@@ -990,6 +1015,27 @@ describe("アイドルの掃除", () => {
   test("新しいルームは掃除されない", () => {
     const room = opened();
     assert.equal(j("join", room, "--as", "alpha").status, "open");
+  });
+
+  test("status も掃除の対象にする", () => {
+    const room = opened();
+    makeStale(room);
+    const r = j("status", room, "--as", "alpha");
+    assert.equal(r.status, "closed");
+    assert.equal(r.next, "report");
+  });
+
+  test("ls も掃除の対象にする", () => {
+    const room = opened();
+    makeStale(room);
+    assert.equal(j("ls").rooms![0].status, "closed");
+  });
+
+  test("掃除で閉じた理由を close が上書きしない", () => {
+    const room = opened();
+    makeStale(room);
+    j("close", room, "--as", "alpha");
+    assert.equal(roomState(room).closed_reason, "idle");
   });
 });
 

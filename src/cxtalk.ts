@@ -820,47 +820,51 @@ const unreadOf = (room: Room): Record<string, number> => {
   return unread;
 };
 
-/** 状態を読むだけで書き換えない。確認しただけで既読になるのを避ける。 */
+/** 状態を説明する hint。参加していない名前に会話の指示を渡さない。 */
+const statusHint = (room: Room, as: string, seq: number, next: Next, unread: number): string => {
+  if (!(as in room.participants)) return notAParticipantHint(as, room);
+  if (room.status === "closed") {
+    // 既読にしないコマンドなので、読む手段を添える。
+    return reportHint(
+      room.id,
+      unread > 0
+        ? `このルームは閉じています。未読が ${unread} 件あります。` +
+            `receive で読んでから要約してください。`
+        : "このルームは閉じています。",
+    );
+  }
+  if (!bothJoined(room)) return "相手はまだ参加していません。receive を呼べば参加を待てます。";
+  const standing =
+    `発言権は ${turnOf(room, seq)} にあります。残り ${hopsLeftOf(room, seq)} 往復です。`;
+  return next === "say" ? sayHint(room, seq, standing) : standing;
+};
+
+/** 既読にしない。確認しただけで last_read が進むと、未読を取りこぼす。 */
 const cmdStatus = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
+  const as = selfName(flags);
+  if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
   if (!room) return;
-  const as = selfName(flags);
+  sweepIdle(room);
   const seq = latestSeq(id);
-  const turn = turnOf(room, seq);
-  const hopsLeft = hopsLeftOf(room, seq);
-  const alone = !bothJoined(room);
-  const next = nextOf(room, as, seq);
-  const standing = `発言権は ${turn} にあります。残り ${hopsLeft} 往復です。`;
   const unread = unreadOf(room);
+  // 参加していない名前に say や receive を促すと、その次で断られる。
+  const next: Next = as in room.participants ? nextOf(room, as, seq) : "ask_user";
   emit({
     ok: true,
     room_id: id,
     status: room.status,
     topic: room.topic,
-    turn,
-    hops_left: hopsLeft,
+    turn: turnOf(room, seq),
+    hops_left: hopsLeftOf(room, seq),
     unread,
     participants: Object.keys(room.participants),
     last_activity_at: room.last_activity_at,
     log_path: logPath(id),
     next,
-    hint:
-      room.status === "closed"
-        ? // 既読にしないコマンドなので、読む手段を添える。
-          reportHint(
-            id,
-            (unread[as] ?? 0) > 0
-              ? `このルームは閉じています。未読が ${unread[as]} 件あります。` +
-                  `receive で読んでから要約してください。`
-              : "このルームは閉じています。",
-          )
-        : alone
-          ? "相手はまだ参加していません。receive を呼べば参加を待てます。"
-          : next === "say"
-            ? sayHint(room, seq, standing)
-            : standing,
+    hint: statusHint(room, as, seq, next, unread[as] ?? 0),
   });
 };
 
@@ -871,6 +875,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
   if (!room) return;
+  sweepIdle(room);
   if (!(as in room.participants)) {
     notAParticipant(id, as, room);
     return;
@@ -916,6 +921,7 @@ const cmdLs = (): void => {
       unreadable.push(id);
       continue;
     }
+    sweepIdle(room);
     const seq = latestSeq(room.id);
     rooms.push({
       room_id: room.id,
