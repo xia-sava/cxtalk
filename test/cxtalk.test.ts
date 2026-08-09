@@ -25,6 +25,9 @@ const NEXT_VALUES = ["say", "receive", "report", "ask_user", "retry"] as const;
 /** SPEC が定める閉じ方。実装とは別に書き、片方だけ増えたときに落ちるようにする。 */
 const CLOSED_REASONS = ["hop_limit", "stale", "no_response", "idle", "manual"] as const;
 
+/** SPEC が定める待機の予算。同じく実装とは別に書く。 */
+const RETRY_LIMIT = 9;
+
 type Reply = {
   ok: boolean;
   next?: (typeof NEXT_VALUES)[number];
@@ -42,10 +45,12 @@ type Reply = {
   rejoined?: boolean;
   messages?: Message[];
   closed_reason?: string | null;
-  retries_left?: number;
+  retries_left?: number | null;
   waited_seconds?: number;
+  silent_seconds?: number;
   unread?: Record<string, number>;
   ignored?: string[];
+  unknown_keys?: string[];
   participants?: string[];
   last_activity_at?: string;
   log_path?: string;
@@ -142,9 +147,21 @@ const opened = (maxHops = 5): string => {
 const say = (room: string, as: string, text: string, advanced: boolean): Reply =>
   j("say", room, "--text", text, "--advanced", String(advanced), "--as", as);
 
+/** 待機の予算を使い切るまで呼び直す。上限に達したときの応答を返す。 */
+const exhaustWaits = (room: string, as: string): Reply => {
+  let last: Reply = {} as Reply;
+  for (let i = 0; i <= RETRY_LIMIT; i++) {
+    last = j("receive", room, "--timeout", "1", "--as", as);
+    if (last.next !== "receive") break;
+  }
+  return last;
+};
+
 const roomStatePath = (room: string): string => join(home, "rooms", room, "room.json");
 
-const roomState = (room: string): { closed_reason: string | null } =>
+const roomState = (
+  room: string,
+): { status: string; closed_reason: string | null; last_activity_at: string } =>
   JSON.parse(readFileSync(roomStatePath(room), "utf8"));
 
 const participantState = (room: string, name: string): ParticipantState =>
@@ -403,7 +420,7 @@ describe("receive", () => {
     assert.equal(r.status, "timeout");
     assert.equal(r.next, "receive");
     assert.equal(r.waited_seconds, 1);
-    assert.equal(r.retries_left, 5);
+    assert.equal(r.retries_left, RETRY_LIMIT - 1);
   });
 
   // 既定値は時間切れの出力にしか現れないため、確かめるには実際に待つしかない。
@@ -417,14 +434,38 @@ describe("receive", () => {
     assert.ok(r.waited_seconds! < 120, `既定の待機が ${r.waited_seconds} 秒になっている`);
   });
 
-  test("リトライを使い切ったら no_response で close", () => {
+  // 相手が停止したのか書いている最中なのかはディスクに現れない。閉じると相手の say は
+  // 入口で断られ、書かれないまま失われるため、判定せずに人間へ返す。
+  test("会話中に待機を使い切っても閉じずに人間へ返す", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
-    let last: Reply = {} as Reply;
-    for (let i = 0; i < 7; i++) {
-      last = j("receive", room, "--timeout", "1", "--as", "alpha");
-      if (last.status === "closed") break;
-    }
+    const last = exhaustWaits(room, "alpha");
+    assert.equal(last.status, "no_answer");
+    assert.equal(last.next, "ask_user");
+    assert.equal(roomState(room).status, "open");
+  });
+
+  test("使い切った後も予算は配り直される", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    exhaustWaits(room, "alpha");
+    const r = j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(r.status, "timeout");
+    assert.equal(r.retries_left, RETRY_LIMIT - 1);
+  });
+
+  // 閉じていれば say は入口で断られる。使い切った後に届いた発言が残ることを固定する。
+  test("使い切った後に相手が発言できる", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    exhaustWaits(room, "alpha");
+    assert.equal(say(room, "beta", "遅れて届く見解です", true).ok, true);
+    assert.equal(j("receive", room, "--timeout", "1", "--as", "alpha").messages!.length, 1);
+  });
+
+  test("参加を待ち切ったら no_response で close", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    const last = exhaustWaits(room, "alpha");
     assert.equal(last.status, "closed");
     assert.equal(last.closed_reason, "no_response");
     assert.equal(last.next, "report");
@@ -760,17 +801,22 @@ describe("終端の伝え方", () => {
     assert.doesNotMatch(r.hint!, /応答できません/);
   });
 
-  test("no_response は停止か長考かを断定しない", () => {
+  test("待ち切っても停止か長考かを断定しない", () => {
     const room = opened();
     say(room, "alpha", "ひとつめ", true);
-    let last: Reply = {} as Reply;
-    for (let i = 0; i < 7; i++) {
-      last = j("receive", room, "--timeout", "1", "--as", "alpha");
-      if (last.status === "closed") break;
-    }
-    assert.equal(last.closed_reason, "no_response");
-    assert.match(last.hint!, /区別できません/);
-    assert.ok(last.log_path!.includes(room));
+    const last = exhaustWaits(room, "alpha");
+    assert.equal(last.status, "no_answer");
+    assert.match(last.hint!, /分かりません/);
+  });
+
+  // 相手が動いているかはディスクに無い。確かめられる人へ、確かめ方とともに渡す。
+  test("待ち切ったら相手のセッションを確かめるよう促す", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    const hint = exhaustWaits(room, "alpha").hint!;
+    assert.match(hint, /receive/);
+    assert.match(hint, /close/);
+    assert.match(hint, /idle/);
   });
 
   test("時間切れを異常として伝えない", () => {
@@ -1187,19 +1233,19 @@ describe("時間切れの数え直し", () => {
   test("数え直した後は上限まで待てる", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
-    setTimeouts(room, "alpha", 5);
+    setTimeouts(room, "alpha", RETRY_LIMIT - 1);
     say(room, "beta", "こちらの制約です", true);
     j("receive", room, "--as", "alpha");
     say(room, "alpha", "では次の論点です", true);
     const r = j("receive", room, "--timeout", "1", "--as", "alpha");
     assert.equal(r.status, "timeout");
-    assert.equal(r.retries_left, 5);
+    assert.equal(r.retries_left, RETRY_LIMIT - 1);
   });
 
   test("応答が届いた後の時間切れで会話を閉じない", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
-    setTimeouts(room, "alpha", 5);
+    setTimeouts(room, "alpha", RETRY_LIMIT - 1);
     say(room, "beta", "こちらの制約です", true);
     j("receive", room, "--as", "alpha");
     say(room, "alpha", "では次の論点です", true);
@@ -1439,7 +1485,10 @@ describe("状態ファイルの値", () => {
     const state = JSON.parse(readFileSync(roomStatePath(room), "utf8")) as EditableRoom;
     delete state.participants.alpha.timeouts;
     writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
-    assert.equal(j("receive", room, "--timeout", "1", "--as", "alpha").retries_left, 5);
+    assert.equal(
+      j("receive", room, "--timeout", "1", "--as", "alpha").retries_left,
+      RETRY_LIMIT - 1,
+    );
   });
 });
 
@@ -1791,44 +1840,36 @@ describe("参加していない名前への案内", () => {
 });
 
 describe("待機の上限に達したときの案内", () => {
-  const exhaust = (room: string, as: string): Reply => {
-    let last: Reply = {} as Reply;
-    for (let i = 0; i < 7; i++) {
-      last = j("receive", room, "--timeout", "1", "--as", as);
-      if (last.status === "closed") break;
-    }
-    return last;
-  };
-
   test("参加待ちで尽きたときは名乗りの取り違えにも触れる", () => {
     const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
-    assert.match(exhaust(room, "alice").hint!, /--as/);
+    assert.match(exhaustWaits(room, "alice").hint!, /--as/);
   });
 
   // 2 人揃っている場面では、名乗りを疑えという助言は正しくない。
   test("会話中に尽きたときは名乗りに触れない", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
-    assert.doesNotMatch(exhaust(room, "alpha").hint!, /--as/);
+    assert.doesNotMatch(exhaustWaits(room, "alpha").hint!, /--as/);
   });
 
   // 相手が一度も参加していなければ発言も無い。起きていない会話に要約を求めない。
   test("参加が成立しないまま閉じたら要約を求めない", () => {
     const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
-    const r = exhaust(room, "alice");
+    const r = exhaustWaits(room, "alice");
     assert.equal(r.closed_reason, "no_response");
     assert.doesNotMatch(r.hint!, /合意できた点/);
   });
 
   test("代わりに room_id が伝わったかを確かめさせる", () => {
     const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
-    assert.match(exhaust(room, "alice").hint!, /room_id/);
+    assert.match(exhaustWaits(room, "alice").hint!, /room_id/);
   });
 
-  test("会話が成立した後なら要約を求める", () => {
+  // 会話は終わっていない。要約を求めると、続けられる会話をそこで畳ませることになる。
+  test("会話中に尽きたときは要約を求めない", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
-    assert.match(exhaust(room, "alpha").hint!, /合意できた点/);
+    assert.doesNotMatch(exhaustWaits(room, "alpha").hint!, /合意できた点/);
   });
 });
 
@@ -2153,6 +2194,25 @@ describe("Stop hook", () => {
   test("hook 自身が起こしたターンでは止めない", () => {
     unreadForBeta();
     assert.equal(stopHook(active(true), "beta").code, 0);
+  });
+
+  // 待機の上限で閉じなくなったため、相手待ちのルームは開いたまま残る。
+  // これで止まると、返事の来ない会話からターンを終えられなくなる。
+  test("相手待ちのまま開いているルームでは止めない", () => {
+    const room = unreadForBeta();
+    exhaustWaits(room, "alpha");
+    assert.equal(roomState(room).status, "open");
+    assert.equal(stopHook(active(false), "alpha").code, 0);
+  });
+
+  // 閉じずに残す利点はここに出る。閉じていれば相手の say は入口で断られている。
+  test("上限を過ぎてから届いた発言は拾う", () => {
+    const room = unreadForBeta();
+    exhaustWaits(room, "alpha");
+    say(room, "beta", "遅れて届く見解です", true);
+    const r = stopHook(active(false), "alpha");
+    assert.equal(r.code, 2);
+    assert.match(r.err, new RegExp(room));
   });
 
   test("止めるときだけ標準エラーに理由を出す", () => {

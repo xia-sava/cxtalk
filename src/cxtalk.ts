@@ -34,7 +34,12 @@ type Flags = Record<string, string>;
 
 const DEFAULT_MAX_HOPS = 5;
 const DEFAULT_TIMEOUT_SECONDS = 100;
-const RETRY_LIMIT = 6;
+/**
+ * 1 回の待機を呼び直せる回数。既定の待機と掛けた 900 秒が、まとめて待てる長さになる。
+ * 実測の発言間隔はここに収まる側と収まらない側の両方にあるため、
+ * 会話中はこの回数を使い切っても閉じず、続けるかどうかを人間に返す。
+ */
+const RETRY_LIMIT = 9;
 const IDLE_MINUTES = 30;
 const POLL_INTERVAL_MS = 200;
 const MAX_PARTICIPANTS = 2;
@@ -414,6 +419,16 @@ const turnOf = (room: Room, seq: number): string => {
 
 const hopsLeftOf = (room: Room, seq: number): number =>
   Math.max(0, room.max_hops - hopsOf(seq));
+
+/**
+ * あと何回待てるか。参加を待つ間と会話中の長考は別に数える。
+ * 待つ側が知る手段が時間切れの応答しかないと、残りを知るために残りを 1 使うことになる。
+ */
+const retriesLeftOf = (room: Room, participant: Participant): number =>
+  Math.max(
+    0,
+    RETRY_LIMIT - (bothJoined(room) ? participant.timeouts : participant.join_timeouts),
+  );
 
 /** 次の発言で上限に達し、相手が応答できなくなる状態か。 */
 const isFinalTurn = (room: Room, seq: number): boolean => hopsLeftOf(room, seq) === 0;
@@ -1029,10 +1044,10 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   const awaitingJoin = !bothJoined(room);
   if (awaitingJoin) participant.join_timeouts += 1;
   else participant.timeouts += 1;
-  writeRoom(room);
-  const retriesLeft = RETRY_LIMIT - (awaitingJoin ? participant.join_timeouts : participant.timeouts);
+  const retriesLeft = retriesLeftOf(room, participant);
 
-  if (retriesLeft <= 0) {
+  // 参加を待つ間に失われるものは無い。相手が来ていなければ発言も書かれていない。
+  if (retriesLeft <= 0 && awaitingJoin) {
     closeRoom(room, "no_response");
     emit({
       ok: true,
@@ -1055,6 +1070,35 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     return;
   }
 
+  /*
+   * 会話が始まっていれば閉じない。相手が停止したのか書いている最中なのかはディスクに現れず、
+   * 書いている側は何も書き込まないため、待つ側からは区別できない。
+   * 閉じると相手の say は入口で断られ、書かれないまま失われる。
+   * 確かめられるのは相手のセッションを見られる人間だけなので、判定せずにそこへ返す。
+   */
+  if (retriesLeft <= 0) {
+    participant.timeouts = 0;
+    writeRoom(room);
+    const silentSeconds = Math.round(
+      (Date.now() - new Date(room.last_activity_at).getTime()) / 1000,
+    );
+    emit({
+      ok: true,
+      status: "no_answer",
+      room_id: id,
+      silent_seconds: silentSeconds,
+      next: "ask_user",
+      hint:
+        `${silentSeconds} 秒のあいだ応答がありません。相手が停止したのか、` +
+        `まだ書いているのかはこちらからは分かりません。ルームは開いたままです。` +
+        `相手のセッションがまだ動いているかをユーザーに確かめ、動いていれば receive を呼び直してください。` +
+        `動いていなければ close で閉じてください。` +
+        `どちらもしないまま ${IDLE_MINUTES} 分無音が続けば、ルームは idle として閉じます。`,
+    });
+    return;
+  }
+
+  writeRoom(room);
   emit({
     ok: true,
     status: "timeout",
