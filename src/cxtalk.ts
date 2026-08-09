@@ -316,18 +316,24 @@ const ignoredHint = (ignored: string[]): string =>
     : `発言として数えなかったファイルが ${ignored.length} 件あります（${ignored.join(" / ")}）。` +
       `本来の発言であればユーザーに知らせてください。`;
 
-/** 状態として読むキー。ここに無いものは room.json にあっても判断に使われない。 */
-const ROOM_KEYS: readonly string[] = [
-  "id",
-  "topic",
-  "status",
-  "opener",
-  "max_hops",
-  "stale_streak",
-  "last_activity_at",
-  "participants",
-  "closed_reason",
-];
+/** 状態ファイルの初期値。書き出す形をここで決める。 */
+const newRoom = (id: string, topic: string, opener: string, maxHops: number): Room => ({
+  id,
+  topic,
+  status: "open",
+  opener,
+  max_hops: maxHops,
+  stale_streak: 0,
+  last_activity_at: nowIso(),
+  participants: { [opener]: newParticipant() },
+  closed_reason: null,
+});
+
+/**
+ * 状態として読むキー。書き出す形から導く。別に並べて持つと、フィールドを足した人が
+ * 片方だけ書き、実装が正しく読んでいる値を「読まないキー」として報告することになる。
+ */
+const ROOM_KEYS: readonly string[] = Object.keys(newRoom("", "", "", 1));
 
 /**
  * 状態として読まなかったキー。発言のファイルと窓を分けるのは、
@@ -778,17 +784,7 @@ const cmdOpen = (flags: Flags): void => {
   }
   const id = newRoomId();
   writing(messagesDir(id), () => mkdirSync(messagesDir(id), { recursive: true }));
-  writeRoom({
-    id,
-    topic,
-    status: "open",
-    opener: as,
-    max_hops: maxHops,
-    stale_streak: 0,
-    last_activity_at: nowIso(),
-    participants: { [as]: newParticipant() },
-    closed_reason: null,
-  });
+  writeRoom(newRoom(id, topic, as, maxHops));
   emit({
     ok: true,
     room_id: id,
