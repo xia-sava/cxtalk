@@ -428,7 +428,7 @@ const writeMessage = (
   advanced: boolean,
   text: string,
 ): void => {
-  const path = join(messagesDir(id), `${String(seq).padStart(SEQ_DIGITS, "0")}-${from}.md`);
+  const path = join(messagesDir(id), `${numbered(seq)}-${from}.md`);
   const head = `${HEAD_OPEN}${nowIso()}\nadvanced: ${advanced}${HEAD_CLOSE}`;
   writing(path, () => writeFileSync(path, `${head}${text}\n`, "utf8"));
 };
@@ -958,10 +958,10 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   // 発言の前に未読を控える。last_read を自分の発言番号へ進めるため、
   // 先に取らないと読んでいない相手の発言まで既読になり、あとから読む手段が残らない。
   // 発言権は seq から導けるので、相手の発言を受け取らないまま say できる。
-  const unread = readMessages(id, room.participants[as].last_read, as);
+  const unread = readMessages(id, participant.last_read, as);
   writeMessage(id, seq, as, advanced === "true", text);
   room.stale_streak = advanced === "true" ? 0 : room.stale_streak + 1;
-  room.participants[as].last_read = seq;
+  participant.last_read = seq;
   room.last_activity_at = nowIso();
   const hopsLeft = hopsLeftOf(room, seq);
 
@@ -1286,7 +1286,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   }
   const alreadyClosed = room.status === "closed";
   closeRoom(room, reason);
-  const { messages } = drainUnread(room, room.participants[as], as);
+  const { messages } = drainUnread(room, participant, as);
   emit({
     ok: true,
     room_id: id,

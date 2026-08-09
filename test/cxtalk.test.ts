@@ -45,6 +45,7 @@ type Reply = {
   rejoined?: boolean;
   messages?: Message[];
   closed_reason?: string | null;
+  kept?: string | null;
   retries_left?: number | null;
   waited_seconds?: number;
   silent_seconds?: number;
