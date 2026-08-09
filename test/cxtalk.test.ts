@@ -2000,6 +2000,44 @@ describe("参加者が自分だけであることの案内", () => {
   });
 });
 
+// in と添字はプロトタイプチェーンにも答える。引き方が散ると、直す先を数え上げた
+// 本人がその場で 1 つ落とす。close は状態を変えて取り消せないため、落とすと重い。
+describe("継承したプロパティ名を参加者と取り違えない", () => {
+  const inherited = ["toString", "constructor", "hasOwnProperty"];
+
+  const conversing = (): string => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    return room;
+  };
+
+  for (const name of inherited) {
+    test(`${name} は参加者として扱わない`, () => {
+      const r = j("status", conversing(), "--as", name);
+      // retries_left だけでは足りない。取り違えると NaN になり、JSON では同じ null になる。
+      assert.equal(r.next, "ask_user");
+      assert.equal(r.retries_left, null);
+    });
+  }
+
+  for (const [label, call] of [
+    ["close", (room: string) => j("close", room, "--as", "toString")],
+    ["receive", (room: string) => j("receive", room, "--timeout", "1", "--as", "toString")],
+    [
+      "say",
+      (room: string) => j("say", room, "--text", "x", "--advanced", "true", "--as", "toString"),
+    ],
+  ] as const) {
+    test(`${label} は参加者でない名前を断る`, () => {
+      const room = conversing();
+      const r = call(room);
+      assert.equal(r.ok, false);
+      assert.equal(r.error, "not_a_participant");
+      assert.equal(roomState(room).status, "open");
+    });
+  }
+});
+
 describe("参加していない名前への案内", () => {
   const oneParticipant = (): string => j("open", "--topic", TOPIC, "--as", "alice").room_id!;
 

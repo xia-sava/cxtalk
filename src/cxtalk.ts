@@ -238,7 +238,7 @@ const readRoom = (id: string): Room | null => {
     throw invalidState("participants がありません。");
   }
   // 先手は participants の中から選ばれる。外れていると双方の番が来ない。
-  if (typeof room.opener !== "string" || !(room.opener in room.participants)) {
+  if (typeof room.opener !== "string" || !Object.hasOwn(room.participants, room.opener)) {
     throw invalidState("opener が参加者の名前ではありません。");
   }
   room.stale_streak = countOf(room.stale_streak, "stale_streak");
@@ -1022,7 +1022,7 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   const room = safeReadRoom(id);
   if (!room) return null;
   sweepIdle(room);
-  const participant = room.participants[as];
+  const participant = participantOf(room, as);
   // 入口で確かめた後に呼ばれる。それでも欠けていたときに黙って待つと、
   // 待機の上限まで進んだ末に、応答が無かったという記録だけが残る。
   if (!participant) return notAParticipantReply(id, as, room);
@@ -1088,7 +1088,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   if (rejectMissingRoom(id)) return;
   const opening = loadRoom(id);
   if (!opening) return;
-  if (!(as in opening.participants)) {
+  if (participantOf(opening, as) === undefined) {
     notAParticipant(id, as, opening);
     return;
   }
@@ -1111,7 +1111,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
 
   const room = loadRoom(id);
   if (!room) return;
-  const participant = room.participants[as];
+  const participant = participantOf(room, as);
   if (!participant) {
     notAParticipant(id, as, room);
     return;
@@ -1237,8 +1237,7 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   const unread = unreadOf(room);
   const ignored = ignoredFiles(id);
   const unknown = unknownKeys(room);
-  // 継承したプロパティを参加者と取り違えると、待機の予算が数値にならない。
-  const participant = Object.hasOwn(room.participants, as) ? room.participants[as] : undefined;
+  const participant = participantOf(room, as);
   // 参加していない名前に say や receive を促すと、その次で断られる。
   const next: Next = participant === undefined ? "ask_user" : nextOf(room, as, seq);
   emit({
@@ -1275,7 +1274,8 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   const room = loadRoom(id);
   if (!room) return;
   sweepIdle(room);
-  if (!(as in room.participants)) {
+  const participant = participantOf(room, as);
+  if (!participant) {
     notAParticipant(id, as, room);
     return;
   }
@@ -1401,7 +1401,7 @@ const cmdCheck = (flags: Flags): void => {
       const room = safeReadRoom(id);
       if (!room) continue;
       sweepIdle(room);
-      const participant = room.participants[as];
+      const participant = participantOf(room, as);
       if (!participant) continue;
       const seq = latestSeq(id);
       if (turnOf(room, seq) !== as) continue;
