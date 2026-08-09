@@ -1688,6 +1688,32 @@ describe("報告へ移る経路の未読", () => {
   });
 });
 
+describe("参加者が自分だけであることの案内", () => {
+  // 同じ見立てが待機の上限にも書かれている。待たせてから告げると、
+  // 待てる回数を使い切った後にしか届かない。
+  const alone = (): string => j("open", "--topic", TOPIC, "--as", "alice").room_id!;
+
+  for (const [label, call] of [
+    ["join", (room: string) => j("join", room, "--as", "alice")],
+    ["status", (room: string) => j("status", room, "--as", "alice")],
+    [
+      "say",
+      (room: string) => j("say", room, "--text", "x", "--advanced", "true", "--as", "alice"),
+    ],
+  ] as const) {
+    test(`${label} は待つ前に参加者が 1 人だと告げる`, () => {
+      const hint = call(alone()).hint!;
+      assert.match(hint, /1 人/);
+      assert.match(hint, /--as/);
+    });
+  }
+
+  // 2 人揃っていれば、名乗りを疑えという助言は正しくない。
+  test("相手が来ていれば告げない", () => {
+    assert.doesNotMatch(j("status", opened(), "--as", "alpha").hint!, /1 人/);
+  });
+});
+
 describe("参加していない名前への案内", () => {
   const oneParticipant = (): string => j("open", "--topic", TOPIC, "--as", "alice").room_id!;
 

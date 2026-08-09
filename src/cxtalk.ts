@@ -387,6 +387,14 @@ const FINAL_TURN_NOTE =
   "これが最後の発言になります。相手は応答できないため、" +
   "合意していない点を合意したことにせず、対立は対立のまま書いてください。";
 
+/**
+ * 相手が来ない見立て。参加者が 1 人だと分かる場所すべてで同じ文を出す。
+ * 待たせてから告げると、待てる回数を使い切った後にしか届かない。
+ */
+const ALONE_NOTE =
+  "参加者はあなた 1 人です。room_id が伝わっていないか、" +
+  "--as の付け忘れで相手と同じ名前になっている可能性があります。";
+
 /** 発言を促す hint。上限に達する発言なら、書く前にそう伝える。 */
 const sayHint = (room: Room, seq: number, head: string): string =>
   isFinalTurn(room, seq) ? `${head}${FINAL_TURN_NOTE}` : head;
@@ -680,7 +688,7 @@ const joinHint = (
   if (room.status === "closed") return closedHint(room.id, unread, "このルームは閉じています。");
   const head = `未読 ${unread} 件。${rejoined ? "再入場です。" : "参加しました。"}`;
   if (!bothJoined(room)) {
-    return `${head}相手はまだ参加していません。receive を呼べば参加を待てます。`;
+    return `${head}相手はまだ参加していません。${ALONE_NOTE}receive を呼べば参加を待てます。`;
   }
   return next === "say"
     ? sayHint(room, seq, `${head}あなたの番です。say で発言してください。`)
@@ -774,8 +782,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       next: "receive",
       hint:
         "このルームにはまだ自分しかいません。相手が参加するまで発言できません。" +
-        "receive を呼べば参加を待てます。待っても来ない場合は、" +
-        "--as の付け忘れで相手と同じ名前になっていないかを確かめてください。",
+        `${ALONE_NOTE}receive を呼べば参加を待てます。`,
     });
     return;
   }
@@ -1045,7 +1052,9 @@ const statusHint = (room: Room, as: string, seq: number, next: Next, unread: num
         : "このルームは閉じています。",
     );
   }
-  if (!bothJoined(room)) return "相手はまだ参加していません。receive を呼べば参加を待てます。";
+  if (!bothJoined(room)) {
+    return `相手はまだ参加していません。${ALONE_NOTE}receive を呼べば参加を待てます。`;
+  }
   const standing =
     `発言権は ${turnOf(room, seq)} にあります。残り ${hopsLeftOf(room, seq)} 往復です。`;
   return next === "say" ? sayHint(room, seq, standing) : standing;
