@@ -171,8 +171,11 @@ const roomState = (
 ): { status: string; closed_reason: string | null; last_activity_at: string } =>
   JSON.parse(readFileSync(roomStatePath(room), "utf8"));
 
+const participantsOf = (room: string): Record<string, ParticipantState> =>
+  JSON.parse(readFileSync(roomStatePath(room), "utf8")).participants;
+
 const participantState = (room: string, name: string): ParticipantState =>
-  JSON.parse(readFileSync(roomStatePath(room), "utf8")).participants[name];
+  participantsOf(room)[name];
 
 /** 発言を書いてから状態を書くまでの間で落ちた状態を作る。 */
 const dropLastRead = (room: string, name: string): void => {
@@ -724,8 +727,16 @@ describe("生ログへの導線", () => {
 
   test("hint にも場所を含める", () => {
     const room = opened();
+    say(room, "alpha", "ひとつめ", true);
     const r = j("close", room, "--as", "alpha");
     assert.ok(r.hint!.includes(r.log_path!));
+  });
+
+  // 要約を求めない相手に原文を読ませる理由が無い。場所は log_path で返している。
+  test("発言が無ければ hint は場所を促さない", () => {
+    const r = j("close", opened(), "--as", "alpha");
+    assert.ok(!r.hint!.includes(r.log_path!));
+    assert.ok(r.log_path!.length > 0);
   });
 
   test("上限で閉じた say も場所を返す", () => {
@@ -1475,6 +1486,41 @@ describe("壊れた room.json", () => {
 
   test("構文の問題として伝える", () => {
     assert.match(j("status", broken(), "--as", "alpha").hint!, /JSON として読み取れません/);
+  });
+});
+
+describe("起きていない会話に要約を求めない", () => {
+  // 閉じ方は no_response に限らない。掃除が先に当たれば、そのあとに相手が join してくる。
+  const emptyClosed = (): string => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    makeStale(room);
+    run("check", "--as", "carol");
+    return room;
+  };
+
+  for (const [label, call] of [
+    ["join", (room: string) => j("join", room, "--as", "alpha")],
+    ["status", (room: string) => j("status", room, "--as", "alpha")],
+  ] as const) {
+    test(`発言 0 件なら ${label} は要約を求めない`, () => {
+      const hint = call(emptyClosed()).hint!;
+      assert.doesNotMatch(hint, /合意できた点/);
+      assert.match(hint, /room_id/);
+    });
+  }
+
+  test("発言があれば要約を求める", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    assert.match(j("join", room, "--as", "alpha").hint!, /合意できた点/);
+  });
+
+  // 終わった会話の参加者一覧に、一度も発言していない名前を残さない。
+  test("閉じたルームに参加者を足さない", () => {
+    const room = emptyClosed();
+    j("join", room, "--as", "beta");
+    assert.deepEqual(Object.keys(participantsOf(room)), ["alpha"]);
   });
 });
 

@@ -724,8 +724,19 @@ const drainUnread = (
   return { messages, latest };
 };
 
+/**
+ * 発言が 1 件も無ければ会話は起きていない。起きていない会話に要約を求めない。
+ * 閉じ方は一つではないため、閉室を説明するすべての hint がここを通る。
+ */
+const nothingToSummarize = (id: string, head: string): string | null =>
+  latestSeq(id) === 0
+    ? `${head}発言は 1 件もありません。要約するものはないので、` +
+      `room_id が正しく伝わったかをユーザーに確かめてください。`
+    : null;
+
 /** 閉じたルームの報告を促す hint。未読があれば読ませてから要約させる。 */
 const closedHint = (id: string, unread: number, head = "ルームは閉じています。"): string =>
+  nothingToSummarize(id, head) ??
   reportHint(
     id,
     unread > 0
@@ -834,8 +845,11 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     });
     return;
   }
-  if (!rejoined) room.participants[as] = newParticipant();
-  const { messages, latest: seq } = drainUnread(room, room.participants[as], as);
+  // 閉じたルームには参加者を足さない。終わった会話の一覧に、
+  // 一度も発言していない名前が残る。履歴は足さずとも返せる。
+  const participant = participantOf(room, as) ?? newParticipant();
+  if (!rejoined && room.status === "open") room.participants[as] = participant;
+  const { messages, latest: seq } = drainUnread(room, participant, as);
   if (room.status === "open") room.last_activity_at = nowIso();
   writeRoom(room);
   const turn = turnOf(room, seq);
@@ -1188,15 +1202,18 @@ const unreadOf = (room: Room): Record<string, number> => {
 
 /** 状態を説明する hint。参加していない名前に会話の指示を渡さない。 */
 const statusHint = (room: Room, as: string, seq: number, next: Next, unread: number): string => {
-  if (!(as in room.participants)) return notAParticipantHint(as, room);
+  if (participantOf(room, as) === undefined) return notAParticipantHint(as, room);
   if (room.status === "closed") {
+    const head = "このルームは閉じています。";
     // 既読にしないコマンドなので、読む手段を添える。
-    return reportHint(
-      room.id,
-      unread > 0
-        ? `このルームは閉じています。未読が ${unread} 件あります。` +
-            `receive で読んでから要約してください。`
-        : "このルームは閉じています。",
+    return (
+      nothingToSummarize(room.id, head) ??
+      reportHint(
+        room.id,
+        unread > 0
+          ? `${head}未読が ${unread} 件あります。receive で読んでから要約してください。`
+          : head,
+      )
     );
   }
   if (!bothJoined(room)) {
