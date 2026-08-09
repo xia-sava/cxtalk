@@ -27,7 +27,8 @@ type Room = {
   closed_reason: ClosedReason | null;
 };
 
-type Message = { seq: number; from: string; at: string; text: string };
+/** advanced は記録の無い発言があるため、真偽の外に「分からない」を持つ。 */
+type Message = { seq: number; from: string; at: string; advanced: boolean | null; text: string };
 
 type Flags = Record<string, string>;
 
@@ -325,19 +326,42 @@ const unreadIn = (files: string[], after: number, as: string): string[] =>
 const unreadFiles = (id: string, after: number, as: string): string[] =>
   unreadIn(messageFiles(id), after, as);
 
+const HEAD_START = "---\n";
+const HEAD_CLOSE = "\n---\n";
+/** 日時が先頭に来ることが、本文の中の区切り行と取り違えない根拠になっている。 */
+const HEAD_OPEN = `${HEAD_START}at: `;
+
+/** ヘッダの行から値を取り出す。書かれていなければ undefined。 */
+const headField = (head: string, key: string): string | undefined =>
+  head
+    .split("\n")
+    .find((line) => line.startsWith(`${key}: `))
+    ?.slice(key.length + 2);
+
+/**
+ * 申告として読める値だけを真偽に直す。書かれていない発言が既にあり、
+ * 欠けているものを false に寄せると、そう申告していない発言に申告が付く。
+ */
+const advancedOf = (raw: string | undefined): boolean | null =>
+  raw === "true" ? true : raw === "false" ? false : null;
+
 const readMessage = (id: string, file: string): Message => {
   const raw = readFileSync(join(messagesDir(id), file), "utf8");
-  const headEnd = raw.indexOf("\n---\n");
+  // 境目は最初の一つを取る。ヘッダが at で始まると決まっているため、
+  // 本文が同じ行を含んでいても、ヘッダの終わりのほうが必ず先に来る。
+  const headEnd = raw.indexOf(HEAD_CLOSE);
   // ヘッダが無いと日時も本文も別の位置から切り出され、
   // 参加者の名前で、その人が書いていない発言として返ることになる。
-  if (!raw.startsWith("---\nat: ") || headEnd < 0) {
+  if (!raw.startsWith(HEAD_OPEN) || headEnd < 0) {
     throw invalidMessage(id, `${file} が発言の形をしていません。`);
   }
-  const body = raw.slice(headEnd + 5);
+  const head = raw.slice(HEAD_START.length, headEnd);
+  const body = raw.slice(headEnd + HEAD_CLOSE.length);
   return {
     seq: seqOfFile(file),
     from: senderOfFile(file),
-    at: raw.slice(raw.indexOf("at: ") + 4, headEnd),
+    at: headField(head, "at") ?? "",
+    advanced: advancedOf(headField(head, "advanced")),
     text: body.endsWith("\n") ? body.slice(0, -1) : body,
   };
 };
@@ -345,9 +369,20 @@ const readMessage = (id: string, file: string): Message => {
 const readMessages = (id: string, after: number, as: string): Message[] =>
   unreadFiles(id, after, as).map((file) => readMessage(id, file));
 
-const writeMessage = (id: string, seq: number, from: string, text: string): void => {
+/**
+ * 申告はここにしか残らない。room.json の連長からは、どの発言がそう申告したかを戻せず、
+ * 続かなかったことを理由に閉じた会話の説明が誰にも検算できなくなる。
+ */
+const writeMessage = (
+  id: string,
+  seq: number,
+  from: string,
+  advanced: boolean,
+  text: string,
+): void => {
   const path = join(messagesDir(id), `${String(seq).padStart(SEQ_DIGITS, "0")}-${from}.md`);
-  writing(path, () => writeFileSync(path, `---\nat: ${nowIso()}\n---\n${text}\n`, "utf8"));
+  const head = `${HEAD_OPEN}${nowIso()}\nadvanced: ${advanced}${HEAD_CLOSE}`;
+  writing(path, () => writeFileSync(path, `${head}${text}\n`, "utf8"));
 };
 
 /**
@@ -828,7 +863,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   // 先に取らないと読んでいない相手の発言まで既読になり、あとから読む手段が残らない。
   // 発言権は seq から導けるので、相手の発言を受け取らないまま say できる。
   const unread = readMessages(id, room.participants[as].last_read, as);
-  writeMessage(id, seq, as, text);
+  writeMessage(id, seq, as, advanced === "true", text);
   room.stale_streak = advanced === "true" ? 0 : room.stale_streak + 1;
   room.participants[as].last_read = seq;
   room.last_activity_at = nowIso();

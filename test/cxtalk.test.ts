@@ -11,7 +11,13 @@ const CLI = join(ROOT, "src", "cxtalk.ts");
 const BIN_DIR = join(ROOT, "bin");
 const HOOK = join(ROOT, "hooks", "stop.sh");
 
-type Message = { seq: number; from: string; at: string; text: string };
+type Message = {
+  seq: number;
+  from: string;
+  at: string;
+  advanced: boolean | null;
+  text: string;
+};
 
 /** SPEC が定める next の全体。示せる行動が増えたらここだけが増える。 */
 const NEXT_VALUES = ["say", "receive", "report", "ask_user", "retry"] as const;
@@ -1515,6 +1521,39 @@ describe("名乗りを取り違えたときの案内", () => {
       assert.match(j(...args).hint!, /--as/);
     });
   }
+});
+
+describe("発言のファイルに残る申告", () => {
+  const messagePath = (room: string, file: string): string =>
+    join(home, "rooms", room, "messages", file);
+
+  for (const advanced of [true, false]) {
+    test(`advanced: ${advanced} がファイルに残り、読み戻せる`, () => {
+      const room = opened();
+      say(room, "alpha", "本文", advanced);
+      assert.match(readFileSync(messagePath(room, "0001-alpha.md"), "utf8"), /\nadvanced: /);
+      assert.equal(j("join", room, "--as", "beta").messages![0].advanced, advanced);
+    });
+  }
+
+  // 境目は最初の一つを取る。ヘッダが at で始まるため、本文の区切り行より必ず先に来る。
+  test("本文に区切り行があっても本文が切れない", () => {
+    const room = opened();
+    const text = "まえがき\n---\nあとがき";
+    say(room, "alpha", text, true);
+    assert.equal(j("join", room, "--as", "beta").messages![0].text, text);
+  });
+
+  // 申告の無い発言が既にある。欠けているものを false に寄せると、
+  // そう申告していない発言に申告が付く。
+  test("申告の無い発言は分からないものとして返す", () => {
+    const room = opened();
+    say(room, "alpha", "本文", true);
+    const path = messagePath(room, "0001-alpha.md");
+    const raw = readFileSync(path, "utf8");
+    writeFileSync(path, raw.replace(/\nadvanced: (true|false)/, ""), "utf8");
+    assert.equal(j("join", room, "--as", "beta").messages![0].advanced, null);
+  });
 });
 
 describe("値を書き忘れてフラグ名を飲み込む", () => {
