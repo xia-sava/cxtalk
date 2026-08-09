@@ -470,13 +470,16 @@ const rejectInvalidName = (name: string): boolean => {
   return true;
 };
 
+/**
+ * 閉じることは活動ではない。last_activity_at を打ち直すと、
+ * 掃除が走った時刻が最後の発言の時刻として残り、無音がいつ始まったかを戻せなくなる。
+ */
 const closeRoom = (room: Room, reason: ClosedReason): void => {
   // 既に閉じているルームの理由は残す。後から閉じにきた側の理由で上書きすると、
   // 話し切った会話に応答が無かったという記録が付く。
   if (room.status === "closed") return;
   room.status = "closed";
   room.closed_reason = reason;
-  room.last_activity_at = nowIso();
   writeRoom(room);
 };
 

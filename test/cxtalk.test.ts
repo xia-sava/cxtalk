@@ -568,6 +568,26 @@ describe("check", () => {
     say(room, "alpha", "最初の論点です", true);
     assert.equal(run("check", "--as", "beta").err, "");
   });
+
+  // 閉じることは活動ではない。打ち直すと、無音がいつ始まったかを戻せなくなる。
+  test("閉じても最終活動の時刻を書き換えない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    idleFor(room, 40);
+    const before = roomState(room).last_activity_at;
+    j("close", room, "--as", "alpha");
+    assert.equal(roomState(room).last_activity_at, before);
+  });
+
+  test("掃除で閉じても最終活動の時刻を書き換えない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    makeStale(room);
+    const before = roomState(room).last_activity_at;
+    j("status", room, "--as", "alpha");
+    assert.equal(roomState(room).closed_reason, "idle");
+    assert.equal(roomState(room).last_activity_at, before);
+  });
 });
 
 describe("共通規約", () => {
