@@ -1201,48 +1201,26 @@ describe("アイドルの掃除", () => {
   test("無音のまま放置されたルームは閉じられる", () => {
     const room = opened();
     makeStale(room);
-    const r = j("join", room, "--as", "alpha");
+    const r = j("status", room, "--as", "alpha");
     assert.equal(r.status, "closed");
-    assert.equal(r.next, "report");
-  });
-
-  test("掃除の理由は idle", () => {
-    const room = opened();
-    makeStale(room);
-    j("join", room, "--as", "alpha");
-    assert.equal(roomState(room).closed_reason, "idle");
-  });
-
-  test("掃除されたルームには発言できない", () => {
-    const room = opened();
-    makeStale(room);
-    assert.equal(say(room, "alpha", "まだ話したい", true).ok, false);
+    assert.equal(r.closed_reason, "idle");
   });
 
   test("新しいルームは掃除されない", () => {
-    const room = opened();
-    assert.equal(j("join", room, "--as", "alpha").status, "open");
+    assert.equal(j("status", opened(), "--as", "alpha").status, "open");
   });
 
   // 席を外した人間が戻ったときに、閉じた理由が案内と食い違わないようにする。
   test("29 分の無音では閉じない", () => {
     const room = opened();
     idleFor(room, 29);
-    assert.equal(j("join", room, "--as", "alpha").status, "open");
+    assert.equal(j("status", room, "--as", "alpha").status, "open");
   });
 
   test("31 分の無音で閉じる", () => {
     const room = opened();
     idleFor(room, 31);
-    assert.equal(j("join", room, "--as", "alpha").status, "closed");
-  });
-
-  test("status も掃除の対象にする", () => {
-    const room = opened();
-    makeStale(room);
-    const r = j("status", room, "--as", "alpha");
-    assert.equal(r.status, "closed");
-    assert.equal(r.next, "report");
+    assert.equal(j("status", room, "--as", "alpha").status, "closed");
   });
 
   test("ls も掃除の対象にする", () => {
@@ -1256,6 +1234,81 @@ describe("アイドルの掃除", () => {
     makeStale(room);
     j("close", room, "--as", "alpha");
     assert.equal(roomState(room).closed_reason, "idle");
+  });
+
+  // 掃除を走らせるのは当事者とは限らない。check は参加者を見る前に掃除を通し、
+  // Stop hook として全セッションのターン終了で走るため、これが主要な閉じ手になる。
+  test("参加していないセッションの check が掃除する", () => {
+    const room = opened();
+    makeStale(room);
+    assert.equal(run("check", "--as", "carol").code, 1);
+    assert.equal(roomState(room).closed_reason, "idle");
+  });
+});
+
+// 行為は参加の証拠として扱う。過去の無音を理由に、いま来た参加や発言を断らない。
+describe("掃除は行為を断らない", () => {
+  test("期限を過ぎていても join できる", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    idleFor(room, 31);
+    const r = j("join", room, "--as", "beta");
+    assert.equal(r.status, "open");
+    assert.equal(roomState(room).status, "open");
+  });
+
+  test("期限を過ぎていても say が通る", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    idleFor(room, 31);
+    assert.equal(say(room, "beta", "31 分かけて書いた本文", true).ok, true);
+    assert.equal(j("status", room, "--as", "alpha").hops_used, 1);
+  });
+
+  // 第三者が先に閉じていれば結果は同じになる。これだけでは足りないことを固定する。
+  test("先に閉じられていれば断られる", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    makeStale(room);
+    run("check", "--as", "carol");
+    assert.equal(say(room, "beta", "31 分かけて書いた本文", true).ok, false);
+  });
+});
+
+describe("断った本文を残す", () => {
+  const refused = (): { room: string; reply: Reply } => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    return { room, reply: say(room, "beta", "書き上げた本文", true) };
+  };
+
+  // 閉じるのは時計の判断であり、書き上げた仕事まで消す理由にはならない。
+  test("断ってもファイルには残す", () => {
+    const { room, reply } = refused();
+    assert.equal(reply.ok, false);
+    assert.equal(reply.kept, "closed-0002-beta.md");
+    const path = join(home, "rooms", room, "messages", reply.kept!);
+    assert.match(readFileSync(path, "utf8"), /書き上げた本文/);
+  });
+
+  test("残した本文は発言として数えない", () => {
+    const { room } = refused();
+    const r = j("status", room, "--as", "alpha");
+    assert.deepEqual(r.ignored, ["closed-0002-beta.md"]);
+    assert.equal(r.hops_used, 1);
+    assert.equal(r.unread!.beta, 0);
+    assert.equal(r.turn, "beta");
+  });
+
+  test("場所を hint で伝える", () => {
+    assert.match(refused().reply.hint!, /closed-0002-beta\.md/);
+  });
+
+  test("本文が渡されていなければ残すものは無い", () => {
+    const room = opened();
+    j("close", room, "--as", "alpha");
+    const r = j("say", room, "--advanced", "true", "--as", "beta");
+    assert.equal(r.kept, null);
   });
 });
 

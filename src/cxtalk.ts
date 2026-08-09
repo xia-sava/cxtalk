@@ -281,6 +281,14 @@ const writeRoom = (room: Room): void => {
 const newParticipant = (): Participant => ({ last_read: 0, timeouts: 0, join_timeouts: 0 });
 
 /**
+ * 参加者を名前で引く唯一の手段。`in` と添字は継承したプロパティにも答えるため、
+ * 参加していない名前が参加者として通り、待機も close もそのまま走る。
+ * 引き方が各所に散ると、直した箇所を数え上げた本人がその場で 1 つ落とす。
+ */
+const participantOf = (room: Room, as: string): Participant | undefined =>
+  Object.hasOwn(room.participants, as) ? room.participants[as] : undefined;
+
+/**
  * 発言のファイル名。通し番号と発言者をここから取り出し、発言権も往復数もそれに従うため、
  * 形の合わないものを数えると会話の状態が変わる。room.json より重い状態がここにある。
  */
@@ -336,6 +344,8 @@ const unknownKeysHint = (keys: string[]): string =>
       `書き換えたつもりの値がここにあるなら、ユーザーに知らせてください。`;
 
 const seqOfFile = (file: string): number => Number(file.slice(0, SEQ_DIGITS));
+
+const numbered = (seq: number): string => String(seq).padStart(SEQ_DIGITS, "0");
 
 /** 名前はファイル名を経由して戻る。保存した綴りを変える環境があるため、比べる側でも寄せる。 */
 const senderOfFile = (file: string): string =>
@@ -425,6 +435,30 @@ const selfName = (flags: Flags): string =>
   (flags.as ?? basename(process.cwd())).normalize("NFC");
 
 const hopsOf = (seq: number): number => Math.ceil(seq / 2);
+
+/** 発言として数えない名前。数字で始めないことが、通し番号の検査から外れる根拠になる。 */
+const REFUSED_PREFIX = "closed-";
+
+/**
+ * 断った本文を残す。閉じるのは時計が下した判断であり、書き上げた仕事まで消す理由にはならない。
+ * 書いている相手はこのツールから見えないため、閉じる側は必ずこの取り違えをしうる。
+ * 発言ではないので申告は持たない。数えなかったものとして ignored の窓から人間に届く。
+ */
+const keepRefused = (id: string, from: string, text: string | undefined): string | null => {
+  if (text === undefined) return null;
+  const file = `${REFUSED_PREFIX}${numbered(latestSeq(id) + 1)}-${from}.md`;
+  const path = join(messagesDir(id), file);
+  writing(path, () =>
+    writeFileSync(path, `${HEAD_OPEN}${nowIso()}${HEAD_CLOSE}${text}\n`, "utf8"),
+  );
+  return file;
+};
+
+const keptHint = (kept: string | null): string =>
+  kept === null
+    ? ""
+    : `断った本文は ${kept} に残しました。発言としては数えません。` +
+      `書いた内容が要るなら、この場所をユーザーに伝えてください。`;
 
 /**
  * 2 人揃っているか。発言も待機も、揃うまでは意味を持たない。
@@ -782,8 +816,9 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
   if (!room) return;
-  sweepIdle(room);
-  const rejoined = as in room.participants;
+  // 掃除を通さない。join は参加している証拠であり、それを過去の無音を理由に断ると、
+  // room_id を運ぶ人間が席を外していただけの相手が会話に入れなくなる。
+  const rejoined = participantOf(room, as) !== undefined;
   if (!rejoined && bothJoined(room)) {
     emit({
       ok: false,
@@ -835,15 +870,18 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
   if (!room) return;
-  sweepIdle(room);
+  // 掃除を通さない。say は会話が続いている証拠であり、
+  // 書き上げるのにかかった時間そのものを理由に、その発言を断ることになる。
   // 参加者かどうかを先に見る。閉じたルームを先に見ると、
   // 参加していない相手に会話の要約と原文の場所を渡すことになる。
-  if (!(as in room.participants)) {
+  const participant = participantOf(room, as);
+  if (!participant) {
     notAParticipant(id, as, room);
     return;
   }
   if (room.status === "closed") {
-    const { messages } = drainUnread(room, room.participants[as], as);
+    const { messages } = drainUnread(room, participant, as);
+    const kept = keepRefused(id, as, flags.text);
     emit({
       ok: false,
       error: "closed",
@@ -851,9 +889,10 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       status: "closed",
       closed_reason: room.closed_reason,
       messages,
+      kept,
       log_path: logPath(id),
       next: "report",
-      hint: closedHint(id, messages.length, "このルームは閉じています。"),
+      hint: closedHint(id, messages.length, "このルームは閉じています。") + keptHint(kept),
     });
     return;
   }
