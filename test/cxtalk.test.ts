@@ -386,6 +386,16 @@ describe("stale_streak", () => {
     assert.equal(r.next, "report");
   });
 
+  // 連長からはどの発言かを戻せない。名指ししないと、言われた側は自分の発言を疑うしかない。
+  test("閉じた hint がどの 2 件かを名指しする", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    say(room, "beta", "同意します", false);
+    const r = say(room, "alpha", "ありがとうございます", false);
+    assert.equal(r.closed_reason, "stale");
+    assert.match(r.hint!, /2 件目と 3 件目/);
+  });
+
   test("advanced: true を挟めば連続が切れる", () => {
     const room = opened();
     say(room, "alpha", "同意します", false);
