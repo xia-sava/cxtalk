@@ -1172,7 +1172,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
         `まだ書いているのかはこちらからは分かりません。ルームは開いたままです。` +
         `相手のセッションがまだ動いているかをユーザーに確かめ、動いていれば receive を呼び直してください。` +
         `動いていなければ close で閉じてください。` +
-        `どちらもしないまま ${IDLE_MINUTES} 分無音が続けば、ルームは idle として閉じます。`,
+        `最後の発言から ${IDLE_MINUTES} 分が経つと、待ち続けていてもルームは idle として閉じます。`,
     });
     return;
   }
