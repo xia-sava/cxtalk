@@ -54,7 +54,14 @@ type Reply = {
   participants?: string[];
   last_activity_at?: string;
   log_path?: string;
-  rooms?: { room_id: string; log_path: string; status: string }[];
+  rooms?: {
+    room_id: string;
+    log_path: string;
+    status: string;
+    closed_reason: string | null;
+    max_hops: number;
+    hops_used: number;
+  }[];
   unreadable?: string[];
 };
 
@@ -508,6 +515,28 @@ describe("status", () => {
     assert.equal(r.turn, "alpha");
     assert.equal(r.topic, TOPIC);
   });
+
+  // 残りを知る手段が時間切れの応答だけだと、知るために 1 回使うことになる。
+  test("待機の残りを副作用なしで返す", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    assert.equal(j("status", room, "--as", "alpha").retries_left, RETRY_LIMIT);
+    j("receive", room, "--timeout", "1", "--as", "alpha");
+    assert.equal(j("status", room, "--as", "alpha").retries_left, RETRY_LIMIT - 1);
+  });
+
+  // 予算を持たない名前に 0 を返すと、使い切ったのと区別が付かない。
+  test("参加していない名前には待機の残りを返さない", () => {
+    assert.equal(j("status", opened(), "--as", "carol").retries_left, null);
+  });
+
+  test("閉じた理由と往復の上限を返す", () => {
+    const room = opened(3);
+    j("close", room, "--as", "alpha");
+    const r = j("status", room, "--as", "alpha");
+    assert.equal(r.closed_reason, "manual");
+    assert.equal(r.max_hops, 3);
+  });
 });
 
 describe("close", () => {
@@ -521,6 +550,26 @@ describe("close", () => {
     assert.equal(r.hops_used, 1);
     assert.equal(r.next, "report");
   });
+
+  // 閉じることは活動ではない。打ち直すと、無音がいつ始まったかを戻せなくなる。
+  test("閉じても最終活動の時刻を書き換えない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    idleFor(room, 40);
+    const before = roomState(room).last_activity_at;
+    j("close", room, "--as", "alpha");
+    assert.equal(roomState(room).last_activity_at, before);
+  });
+
+  test("掃除で閉じても最終活動の時刻を書き換えない", () => {
+    const room = opened();
+    say(room, "alpha", "ひとつめ", true);
+    makeStale(room);
+    const before = roomState(room).last_activity_at;
+    j("status", room, "--as", "alpha");
+    assert.equal(roomState(room).closed_reason, "idle");
+    assert.equal(roomState(room).last_activity_at, before);
+  });
 });
 
 describe("ls", () => {
@@ -530,6 +579,24 @@ describe("ls", () => {
     const out = run("ls").out;
     assert.match(out, new RegExp(a));
     assert.match(out, new RegExp(b));
+  });
+
+  // 選ぶのは人間。閉じた理由と進み具合が出ないと、話し切ったルームと
+  // 何も起きなかったルームが同じ closed にしか見えない。
+  test("閉じた理由と進み具合を出す", () => {
+    const talked = opened(3);
+    say(talked, "alpha", "ひとつめ", true);
+    say(talked, "beta", "ふたつめ", true);
+    j("close", talked, "--as", "alpha");
+    const silent = opened(3);
+    j("close", silent, "--as", "alpha");
+
+    const rooms = j("ls").rooms ?? [];
+    const listed = (id: string) => rooms.find((room) => room.room_id === id)!;
+    assert.equal(listed(talked).hops_used, 1);
+    assert.equal(listed(silent).hops_used, 0);
+    assert.equal(listed(talked).closed_reason, "manual");
+    assert.equal(listed(talked).max_hops, 3);
   });
 });
 
@@ -614,26 +681,6 @@ describe("check", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
     assert.equal(run("check", "--as", "beta").err, "");
-  });
-
-  // 閉じることは活動ではない。打ち直すと、無音がいつ始まったかを戻せなくなる。
-  test("閉じても最終活動の時刻を書き換えない", () => {
-    const room = opened();
-    say(room, "alpha", "ひとつめ", true);
-    idleFor(room, 40);
-    const before = roomState(room).last_activity_at;
-    j("close", room, "--as", "alpha");
-    assert.equal(roomState(room).last_activity_at, before);
-  });
-
-  test("掃除で閉じても最終活動の時刻を書き換えない", () => {
-    const room = opened();
-    say(room, "alpha", "ひとつめ", true);
-    makeStale(room);
-    const before = roomState(room).last_activity_at;
-    j("status", room, "--as", "alpha");
-    assert.equal(roomState(room).closed_reason, "idle");
-    assert.equal(roomState(room).last_activity_at, before);
   });
 });
 
@@ -1375,6 +1422,38 @@ describe("壊れた room.json", () => {
 
   test("構文の問題として伝える", () => {
     assert.match(j("status", broken(), "--as", "alpha").hint!, /JSON として読み取れません/);
+  });
+});
+
+describe("room.json の知らないキー", () => {
+  const withExtraKeys = (room: string): void => {
+    const state = JSON.parse(readFileSync(roomStatePath(room), "utf8"));
+    state.turn = "alpha";
+    state.hops = 1;
+    writeFileSync(roomStatePath(room), JSON.stringify(state), "utf8");
+  };
+
+  // 黙って無視すると、書き換えた人には反映されたように見える。
+  for (const command of ["join", "status"]) {
+    test(`${command} が読まなかったキーを名前で挙げる`, () => {
+      const room = opened();
+      withExtraKeys(room);
+      const r = j(command, room, "--as", "beta");
+      assert.deepEqual(r.unknown_keys, ["turn", "hops"]);
+      assert.match(r.hint!, /turn \/ hops/);
+    });
+  }
+
+  test("知らないキーがあっても会話は続けられる", () => {
+    const room = opened();
+    withExtraKeys(room);
+    assert.equal(say(room, "alpha", "本文", true).ok, true);
+  });
+
+  test("知らないキーが無ければ触れない", () => {
+    const r = j("status", opened(), "--as", "beta");
+    assert.deepEqual(r.unknown_keys, []);
+    assert.doesNotMatch(r.hint!, /読まないキー/);
   });
 });
 

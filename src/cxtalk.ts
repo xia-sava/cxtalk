@@ -308,6 +308,33 @@ const ignoredHint = (ignored: string[]): string =>
     : `発言として数えなかったファイルが ${ignored.length} 件あります（${ignored.join(" / ")}）。` +
       `本来の発言であればユーザーに知らせてください。`;
 
+/** 状態として読むキー。ここに無いものは room.json にあっても判断に使われない。 */
+const ROOM_KEYS: readonly string[] = [
+  "id",
+  "topic",
+  "status",
+  "opener",
+  "max_hops",
+  "stale_streak",
+  "last_activity_at",
+  "participants",
+  "closed_reason",
+];
+
+/**
+ * 状態として読まなかったキー。発言のファイルと窓を分けるのは、
+ * 直しに行く先が room.json と messages で違うためである。
+ */
+const unknownKeys = (room: Room): string[] =>
+  Object.keys(room).filter((key) => !ROOM_KEYS.includes(key));
+
+/** 読まなかったことを伝える窓。書き換えた値が効いていないと気づける経路はここだけになる。 */
+const unknownKeysHint = (keys: string[]): string =>
+  keys.length === 0
+    ? ""
+    : `room.json に状態として読まないキーが ${keys.length} 件あります（${keys.join(" / ")}）。` +
+      `書き換えたつもりの値がここにあるなら、ユーザーに知らせてください。`;
+
 const seqOfFile = (file: string): number => Number(file.slice(0, SEQ_DIGITS));
 
 /** 名前はファイル名を経由して戻る。保存した綴りを変える環境があるため、比べる側でも寄せる。 */
@@ -779,12 +806,14 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   const turn = turnOf(room, seq);
   const next = nextOf(room, as, seq);
   const ignored = ignoredFiles(id);
+  const unknown = unknownKeys(room);
   emit({
     ok: true,
     room_id: id,
     as,
     rejoined,
     ignored,
+    unknown_keys: unknown,
     topic: room.topic,
     status: room.status,
     hops_left: hopsLeftOf(room, seq),
@@ -792,7 +821,10 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
     turn,
     log_path: logPath(id),
     next,
-    hint: joinHint(room, seq, messages.length, rejoined, next) + ignoredHint(ignored),
+    hint:
+      joinHint(room, seq, messages.length, rejoined, next) +
+      ignoredHint(ignored) +
+      unknownKeysHint(unknown),
   });
 };
 
@@ -1057,15 +1089,9 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
       log_path: logPath(id),
       next: "report",
       // 相手が一度も参加していなければ発言も無い。起きていない会話に要約を求めない。
-      hint: awaitingJoin
-        ? "待機の上限に達したためルームを閉じました。相手はまだ参加しておらず、発言もありません。" +
-          "要約するものはないので、room_id が正しく伝わったかをユーザーに確かめてください。" +
-          "room_id が伝わっていないか、--as の付け忘れで相手と同じ名前になっている可能性があります。"
-        : reportHint(
-            id,
-            "待機の上限に達したためルームを閉じました。相手が停止したのか、まだ考えているのかは区別できません。" +
-              "どちらであるかを断定せず、応答が得られなかった事実として報告してください。",
-          ),
+      hint:
+        "待機の上限に達したためルームを閉じました。相手はまだ参加しておらず、発言もありません。" +
+        `要約するものはないので、ユーザーに確かめてください。${ALONE_NOTE}`,
     });
     return;
   }
@@ -1154,22 +1180,34 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   const seq = latestSeq(id);
   const unread = unreadOf(room);
   const ignored = ignoredFiles(id);
+  const unknown = unknownKeys(room);
+  // 継承したプロパティを参加者と取り違えると、待機の予算が数値にならない。
+  const participant = Object.hasOwn(room.participants, as) ? room.participants[as] : undefined;
   // 参加していない名前に say や receive を促すと、その次で断られる。
-  const next: Next = as in room.participants ? nextOf(room, as, seq) : "ask_user";
+  const next: Next = participant === undefined ? "ask_user" : nextOf(room, as, seq);
   emit({
     ok: true,
     room_id: id,
     status: room.status,
+    closed_reason: room.closed_reason,
     topic: room.topic,
     turn: turnOf(room, seq),
+    max_hops: room.max_hops,
+    hops_used: hopsOf(seq),
     hops_left: hopsLeftOf(room, seq),
     unread,
+    // 参加していない名前には待機の予算が無い。0 を返すと使い切ったように読める。
+    retries_left: participant === undefined ? null : retriesLeftOf(room, participant),
     ignored,
+    unknown_keys: unknown,
     participants: Object.keys(room.participants),
     last_activity_at: room.last_activity_at,
     log_path: logPath(id),
     next,
-    hint: statusHint(room, as, seq, next, unread[as] ?? 0) + ignoredHint(ignored),
+    hint:
+      statusHint(room, as, seq, next, unread[as] ?? 0) +
+      ignoredHint(ignored) +
+      unknownKeysHint(unknown),
   });
 };
 
@@ -1232,7 +1270,10 @@ const cmdLs = (): void => {
       room_id: room.id,
       topic: room.topic,
       status: room.status,
+      closed_reason: room.closed_reason,
       turn: turnOf(room, seq),
+      max_hops: room.max_hops,
+      hops_used: hopsOf(seq),
       hops_left: hopsLeftOf(room, seq),
       unread: unreadOf(room),
       last_activity_at: room.last_activity_at,
