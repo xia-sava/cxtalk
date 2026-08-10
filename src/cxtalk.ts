@@ -746,11 +746,20 @@ const closeRoom = (room: Room, reason: ClosedReason): void => {
   writeRoom(room);
 };
 
-/** 無音のまま放置されたルームを閉じる。 */
+/**
+ * 最後の活動からの無音の長さ。閉じる境目との比較は読む側が行う。
+ * 状態を見るだけのコマンドはこれを返すにとどめ、他人の会話を閉じない。
+ */
+const silentSecondsOf = (room: Room): number =>
+  Math.max(0, Math.round((Date.now() - new Date(room.last_activity_at).getTime()) / 1000));
+
+/**
+ * 無音のまま放置されたルームを閉じる。参加している経路からのみ呼ぶ。
+ * 状態を見るだけの経路から呼ぶと、一覧を覗いた第三者が他人の会話を閉じることになる。
+ */
 const sweepIdle = (room: Room): void => {
   if (room.status !== "open") return;
-  const idleFor = Date.now() - new Date(room.last_activity_at).getTime();
-  if (idleFor > IDLE_MINUTES * 60 * 1000) closeRoom(room, "idle");
+  if (silentSecondsOf(room) > IDLE_MINUTES * 60) closeRoom(room, "idle");
 };
 
 const newRoomId = (): string => {
@@ -1339,9 +1348,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   if (retriesLeft <= 0) {
     participant.timeouts = 0;
     writeRoom(room);
-    const silentSeconds = Math.round(
-      (Date.now() - new Date(room.last_activity_at).getTime()) / 1000,
-    );
+    const silentSeconds = silentSecondsOf(room);
     const lastRun = hookLastRun();
     emit({
       ok: true,
@@ -1417,7 +1424,6 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
   if (!room) return;
-  sweepIdle(room);
   const seq = latestSeq(id);
   const unread = unreadOf(room);
   const ignored = ignoredFiles(id);
@@ -1442,6 +1448,7 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
     unknown_keys: unknown,
     participants: Object.keys(room.participants),
     last_activity_at: room.last_activity_at,
+    silent_seconds: silentSecondsOf(room),
     log_path: logPath(id),
     next,
     hint:
@@ -1513,9 +1520,6 @@ const cmdLs = (flags: Flags): void => {
       unreadable.push(id);
       continue;
     }
-    sweepIdle(room);
-    // 掃除を通してから絞る。絞ってから掃除すると、閉じるべきルームが
-    // 開いているものだけを求めた呼び出しから漏れ続ける。
     if (wanted !== undefined && (room.status === "open") !== (wanted === "true")) continue;
     const seq = latestSeq(room.id);
     rooms.push({
@@ -1529,6 +1533,8 @@ const cmdLs = (flags: Flags): void => {
       hops_left: hopsLeftOf(room, seq),
       unread: unreadOf(room),
       last_activity_at: room.last_activity_at,
+      // 閉じるべき状態を、閉じずに見せる。一覧は状態を変えない。
+      silent_seconds: silentSecondsOf(room),
     });
   }
   // 絞ったことを言わずに件数だけ返すと、絞り込みを付けた側は全部を見たと読む。

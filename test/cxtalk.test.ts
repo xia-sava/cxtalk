@@ -66,6 +66,7 @@ type Reply = {
   hook_last_run?: string | null;
   log_path?: string;
   log_root?: string;
+  silent_seconds?: number;
   rooms?: {
     room_id: string;
     log_path?: string;
@@ -73,6 +74,7 @@ type Reply = {
     closed_reason: string | null;
     max_hops: number;
     hops_used: number;
+    silent_seconds?: number;
   }[];
   unreadable?: string[];
 };
@@ -647,7 +649,7 @@ describe("close", () => {
     say(room, "alpha", "ひとつめ", true);
     makeStale(room);
     const before = roomState(room).last_activity_at;
-    j("status", room, "--as", "alpha");
+    j("receive", room, "--timeout", "1", "--as", "alpha");
     assert.equal(roomState(room).closed_reason, "idle");
     assert.equal(roomState(room).last_activity_at, before);
   });
@@ -1344,10 +1346,13 @@ describe("close の理由", () => {
 });
 
 describe("アイドルの掃除", () => {
+  /** 参加している経路から掃除を通す。receive の待機は 1 回ごとに掃除を通る。 */
+  const sweep = (room: string): Reply => j("receive", room, "--timeout", "1", "--as", "alpha");
+
   test("無音のまま放置されたルームは閉じられる", () => {
     const room = opened();
     makeStale(room);
-    const r = j("status", room, "--as", "alpha");
+    const r = sweep(room);
     assert.equal(r.status, "closed");
     assert.equal(r.closed_reason, "idle");
   });
@@ -1360,19 +1365,15 @@ describe("アイドルの掃除", () => {
   test("29 分の無音では閉じない", () => {
     const room = opened();
     idleFor(room, 29);
+    sweep(room);
     assert.equal(j("status", room, "--as", "alpha").status, "open");
   });
 
   test("31 分の無音で閉じる", () => {
     const room = opened();
     idleFor(room, 31);
+    sweep(room);
     assert.equal(j("status", room, "--as", "alpha").status, "closed");
-  });
-
-  test("ls も掃除の対象にする", () => {
-    const room = opened();
-    makeStale(room);
-    assert.equal(j("ls").rooms![0].status, "closed");
   });
 
   test("掃除で閉じた理由を close が上書きしない", () => {
@@ -1380,6 +1381,31 @@ describe("アイドルの掃除", () => {
     makeStale(room);
     j("close", room, "--as", "alpha");
     assert.equal(roomState(room).closed_reason, "idle");
+  });
+
+  // 一覧と状態は「壊れていることが伝わる窓」として呼ばせている。
+  // 覗く行為が他人の会話を閉じると、窓を覗けと言いながら閉じさせることになる。
+  for (const [label, call] of [
+    ["ls", () => j("ls")],
+    ["status", (room: string) => j("status", room, "--as", "carol")],
+  ] as const) {
+    test(`${label} は他人のルームを閉じない`, () => {
+      const room = opened();
+      makeStale(room);
+      call(room);
+      assert.equal(roomState(room).status, "open");
+    });
+  }
+
+  test("閉じるべき状態は無音の秒数として見える", () => {
+    const room = opened();
+    idleFor(room, 31);
+    assert.ok(j("ls").rooms!.find((r) => r.room_id === room)!.silent_seconds! > 30 * 60);
+    assert.ok(j("status", room, "--as", "alpha").silent_seconds! > 30 * 60);
+  });
+
+  test("新しいルームの無音は短い", () => {
+    assert.ok(j("status", opened(), "--as", "alpha").silent_seconds! < 60);
   });
 
   // check は全セッションのターン終了で走る。参加していないルームまで掃除すると、
