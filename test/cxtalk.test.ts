@@ -2071,6 +2071,37 @@ describe("発言のファイルに残る申告", () => {
   });
 });
 
+// 添字への代入は __proto__ を own にしない。落ちると、参加したのに参加者にならない。
+describe("継承したプロパティ名を代入で落とさない", () => {
+  const joined = (): string => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    j("join", room, "--as", "__proto__");
+    return room;
+  };
+
+  test("__proto__ でも参加者として残る", () => {
+    assert.deepEqual(j("status", joined(), "--as", "alpha").participants, ["alpha", "__proto__"]);
+  });
+
+  test("__proto__ でも発言できる", () => {
+    const room = joined();
+    say(room, "alpha", "最初の論点です", true);
+    assert.equal(say(room, "__proto__", "応答です", true).ok, true);
+  });
+
+  test("__proto__ の未読も数える", () => {
+    const room = joined();
+    say(room, "alpha", "最初の論点です", true);
+    assert.equal(j("status", room, "--as", "alpha").unread!["__proto__"], 1);
+  });
+
+  test("--__proto__ は受け付けないフラグとして断る", () => {
+    const r = j("ls", "--__proto__", "x");
+    assert.equal(r.ok, false);
+    assert.equal(r.next, "retry");
+  });
+});
+
 describe("壊れた発言のファイル", () => {
   const withBody = (body: string): string => {
     const room = opened();

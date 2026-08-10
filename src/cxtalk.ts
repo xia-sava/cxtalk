@@ -187,7 +187,8 @@ type Parsed = { command: string; positional: string[]; flags: Flags; error?: str
 /** フラグは必ず値を取る。値の無いフラグは省略ではなく誤りとして返す。 */
 const parseArgv = (argv: string[]): Parsed => {
   const words: string[] = [];
-  const flags: Flags = {};
+  // 添字への代入は __proto__ を own にしない。落ちると未知のフラグとしても挙がらない。
+  let flags: Flags = {};
   let error: string | undefined;
   for (let i = 0; i < argv.length && error === undefined; i++) {
     const token = argv[i];
@@ -209,7 +210,7 @@ const parseArgv = (argv: string[]): Parsed => {
         `値を添えて呼び直してください。`;
       continue;
     }
-    flags[key] = value;
+    flags = { ...flags, [key]: value };
     i++;
   }
   const command = words[0] ?? "";
@@ -970,7 +971,10 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   // 閉じたルームには参加者を足さない。終わった会話の一覧に、
   // 一度も発言していない名前が残る。履歴は足さずとも返せる。
   const participant = participantOf(room, as) ?? newParticipant();
-  if (!rejoined && room.status === "open") room.participants[as] = participant;
+  // 添字への代入は __proto__ を own にしない。参加者が黙って落ちるため、定義で作り直す。
+  if (!rejoined && room.status === "open") {
+    room.participants = { ...room.participants, [as]: participant };
+  }
   rememberAwake(as);
   const { messages, latest: seq } = drainUnread(room, participant, as);
   if (room.status === "open") room.last_activity_at = nowIso();
@@ -1324,13 +1328,13 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   });
 };
 
-const unreadOf = (room: Room): Record<string, number> => {
-  const unread: Record<string, number> = {};
-  for (const name of Object.keys(room.participants)) {
-    unread[name] = unreadFiles(room.id, room.participants[name].last_read, name).length;
-  }
-  return unread;
-};
+const unreadOf = (room: Room): Record<string, number> =>
+  Object.fromEntries(
+    Object.entries(room.participants).map(([name, participant]) => [
+      name,
+      unreadFiles(room.id, participant.last_read, name).length,
+    ]),
+  );
 
 /** 状態を説明する hint。参加していない名前に会話の指示を渡さない。 */
 const statusHint = (room: Room, as: string, seq: number, next: Next, unread: number): string => {
