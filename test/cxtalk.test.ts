@@ -65,9 +65,10 @@ type Reply = {
   last_activity_at?: string;
   hook_last_run?: string | null;
   log_path?: string;
+  log_root?: string;
   rooms?: {
     room_id: string;
-    log_path: string;
+    log_path?: string;
     status: string;
     closed_reason: string | null;
     max_hops: number;
@@ -828,10 +829,17 @@ describe("生ログへの導線", () => {
     assert.ok(j("status", room).log_path!.includes(room));
   });
 
-  test("ls は各ルームの場所を返す", () => {
+  // 行ごとに置くと、量の 1〜2 割が room_id から導ける同じ前置きで埋まる。
+  test("ls は置き場のルートを 1 回だけ返す", () => {
     const room = opened();
-    const rooms = j("ls").rooms!;
-    assert.ok(rooms.some((r) => r.room_id === room && r.log_path.includes(room)));
+    const r = j("ls");
+    assert.ok(existsSync(join(r.log_root!, room)));
+    assert.equal(r.rooms!.find((each) => each.room_id === room)!.log_path, undefined);
+  });
+
+  test("ls は原文への辿り方を hint で伝える", () => {
+    opened();
+    assert.match(j("ls").hint!, /log_root/);
   });
 
   test("閉じたルームへの join も場所を返す", () => {

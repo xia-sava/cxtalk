@@ -1518,18 +1518,21 @@ const cmdLs = (): void => {
       hops_left: hopsLeftOf(room, seq),
       unread: unreadOf(room),
       last_activity_at: room.last_activity_at,
-      log_path: logPath(room.id),
     });
   }
   const guide =
     rooms.length === 0
       ? "ルームはありません。会話を始めるなら open を、参加するなら room_id をユーザーに確認してください。"
       : `${rooms.length} 件のルームがあります。どのルームの話かをユーザーに確認してください。` +
-        `未読があるルームは join で続きを読めます。`;
+        `未読があるルームは join で続きを読めます。原文は log_root の下の room_id と` +
+        `同じ名前のディレクトリにあります。`;
   emit({
     ok: true,
     rooms,
     unreadable,
+    // 行ごとに置くと、量の 1〜2 割が room_id から導ける同じ前置きで埋まる。
+    // 一覧は溜まるほど重くなり、重くなると壊れたルームを見る唯一の窓が呼ばれなくなる。
+    log_root: resolve(roomsDir()),
     next: "ask_user",
     hint:
       unreadable.length > 0
