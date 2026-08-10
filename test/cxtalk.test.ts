@@ -491,6 +491,31 @@ describe("receive", () => {
     assert.equal(roomState(room).status, "open");
   });
 
+  // 相手が動いていても未読を知らされていないことがある。応答が無い理由の候補になる。
+  test("記録が無ければ起こす仕組みを候補に挙げる", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    const last = exhaustWaits(room, "alpha");
+    assert.equal(last.hook_last_run, null);
+    assert.match(last.hint!, /知らされていない可能性/);
+  });
+
+  test("記録があれば候補に挙げない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    writeFileSync(join(home, "last_check"), "2026-08-10T14:00:00+09:00\n", "utf8");
+    const last = exhaustWaits(room, "alpha");
+    assert.equal(last.hook_last_run, "2026-08-10T14:00:00+09:00");
+    assert.doesNotMatch(last.hint!, /知らされていない可能性/);
+  });
+
+  // 待ち切ったときの案内は、実装が実際にすることと揃っている必要がある。
+  test("待ち続けても閉じることを伝える", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    assert.match(exhaustWaits(room, "alpha").hint!, /待ち続けていても/);
+  });
+
   test("使い切った後も予算は配り直される", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);

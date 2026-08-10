@@ -151,6 +151,16 @@ const hookRunNote = (at: string | null): string =>
       "相手を起こす仕組みが効いていない可能性があります。ユーザーに確かめてもらってください。"
     : `Stop hook が最後に走ったのは ${at} です。`;
 
+/**
+ * 応答が無い理由の候補として渡す。相手が動いていても、未読が届いたことを
+ * 知らされていなければ返事は来ない。確かめてもらう先が 1 つ増える。
+ */
+const stalledNote = (at: string | null): string =>
+  at === null
+    ? "なお、このマシンで Stop hook が走った記録はありません。" +
+      "相手のセッションが動いていても、未読があることを知らされていない可能性があります。"
+    : "";
+
 const forgetAwake = (): void => {
   const path = awakePath();
   if (path !== null && existsSync(path)) writing(path, () => rmSync(path));
@@ -1246,18 +1256,22 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     const silentSeconds = Math.round(
       (Date.now() - new Date(room.last_activity_at).getTime()) / 1000,
     );
+    const lastRun = hookLastRun();
     emit({
       ok: true,
       status: "no_answer",
       room_id: id,
       silent_seconds: silentSeconds,
+      hook_last_run: lastRun,
       next: "ask_user",
       hint:
         `${silentSeconds} 秒のあいだ応答がありません。相手が停止したのか、` +
         `まだ書いているのかはこちらからは分かりません。ルームは開いたままです。` +
         `相手のセッションがまだ動いているかをユーザーに確かめ、動いていれば receive を呼び直してください。` +
         `動いていなければ close で閉じてください。` +
-        `最後の発言から ${IDLE_MINUTES} 分が経つと、待ち続けていてもルームは idle として閉じます。`,
+        `最後の発言から ${IDLE_MINUTES} 分が経つと、待ち続けていてもルームは idle として閉じます。` +
+        // 相手が動いていても未読を知らされていないことがある。応答が無い理由の候補になる。
+        stalledNote(lastRun),
     });
     return;
   }
