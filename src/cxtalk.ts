@@ -555,6 +555,12 @@ const hopsOf = (seq: number): number => Math.ceil(seq / 2);
 const REFUSED_PREFIX = "closed-";
 
 /**
+ * 救出の結果。書けなくても応答は返す。ここで止めると、既に既読にした相手の最終見解が
+ * 応答にも載らず、ファイルにも残らないまま、誰にも届かなくなる。
+ */
+type Kept = { file: string | null; unwritable: string | null };
+
+/**
  * 空いている名前を探す。同じ番号で断られるのは一度とは限らず、
  * 同じ名前へ書くと先に救った本文が消える。残すために救っているので、上書きでは用をなさない。
  */
@@ -571,21 +577,31 @@ const refusedFile = (id: string, from: string): string => {
  * 書いている相手はこのツールから見えないため、閉じる側は必ずこの取り違えをしうる。
  * 発言ではないので申告は持たない。数えなかったものとして ignored の窓から人間に届く。
  */
-const keepRefused = (id: string, from: string, text: string | undefined): string | null => {
-  if (text === undefined) return null;
+const keepRefused = (id: string, from: string, text: string | undefined): Kept => {
+  if (text === undefined) return { file: null, unwritable: null };
   const file = refusedFile(id, from);
   const path = join(messagesDir(id), file);
-  writing(path, () =>
-    writeFileSync(path, `${HEAD_OPEN}${nowIso()}${HEAD_CLOSE}${text}\n`, "utf8"),
-  );
-  return file;
+  try {
+    writeFileSync(path, `${HEAD_OPEN}${nowIso()}${HEAD_CLOSE}${text}\n`, "utf8");
+  } catch {
+    return { file: null, unwritable: path };
+  }
+  return { file, unwritable: null };
 };
 
-const keptHint = (kept: string | null): string =>
-  kept === null
+const keptHint = ({ file, unwritable }: Kept): string => {
+  if (unwritable !== null) {
+    return (
+      `断った本文は残せませんでした。${unwritable} に書き込めません。` +
+      `書いた内容はこの応答にしか無いため、ユーザーに渡してください。` +
+      `置き場所と権限をユーザーに確認してもらってください。`
+    );
+  }
+  return file === null
     ? ""
-    : `断った本文は ${kept} に残しました。発言としては数えません。` +
+    : `断った本文は ${file} に残しました。発言としては数えません。` +
       `書いた内容が要るなら、この場所をユーザーに伝えてください。`;
+};
 
 /**
  * 2 人揃っているか。発言も待機も、揃うまでは意味を持たない。
@@ -1043,7 +1059,8 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       status: "closed",
       closed_reason: room.closed_reason,
       messages,
-      kept,
+      kept: kept.file,
+      kept_unwritable: kept.unwritable,
       log_path: logPath(id),
       next: "report",
       hint: closedHint(id, messages.length, "このルームは閉じています。") + keptHint(kept),

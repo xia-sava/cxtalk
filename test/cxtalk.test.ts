@@ -54,6 +54,7 @@ type Reply = {
   messages?: Message[];
   closed_reason?: string | null;
   kept?: string | null;
+  kept_unwritable?: string | null;
   retries_left?: number | null;
   waited_seconds?: number;
   silent_seconds?: number;
@@ -1401,6 +1402,27 @@ describe("断った本文を残す", () => {
     j("close", room, "--as", "alpha");
     const r = j("say", room, "--advanced", "true", "--as", "beta");
     assert.equal(r.kept, null);
+  });
+
+  // 止めると、既読にした相手の最終見解が応答にも載らず、ファイルにも残らない。
+  const unwritable = (): Reply => {
+    const room = opened();
+    j("close", room, "--as", "alpha");
+    rmSync(join(home, "rooms", room, "messages"), { recursive: true });
+    return say(room, "beta", "書き上げた本文", true);
+  };
+
+  test("残せなくても応答は返す", () => {
+    const r = unwritable();
+    assert.equal(r.error, "closed");
+    assert.equal(r.next, "report");
+  });
+
+  test("残せなかったことを場所とともに伝える", () => {
+    const r = unwritable();
+    assert.equal(r.kept, null);
+    assert.match(r.kept_unwritable!, /closed-0001-beta\.md$/);
+    assert.match(r.hint!, /残せませんでした/);
   });
 
   // 残すために救っている。同じ名前へ書くと、先に救った本文が消える。
