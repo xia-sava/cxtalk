@@ -1,7 +1,15 @@
 import { test, describe, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync, renameSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+  rmSync,
+  renameSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -91,11 +99,26 @@ afterEach(() => {
   rmSync(home, { recursive: true, force: true });
 });
 
+/**
+ * 名乗りごとに別のセッションとして扱う。控えはセッションを鍵にするため、
+ * 1 つの id を共有すると 2 つのセッションを区別できなくなる。
+ */
+const sessionFor = (as: string): string => `s-${as}`;
+
+const sessionOf = (args: string[]): string => {
+  const at = args.indexOf("--as");
+  const as = at < 0 ? undefined : args[at + 1];
+  return as === undefined ? "s-none" : sessionFor(as);
+};
+
 const run = (...args: string[]): Run => {
   const r = spawnSync(
     process.execPath,
     ["--disable-warning=ExperimentalWarning", CLI, ...args],
-    { encoding: "utf8", env: { ...process.env, CXTALK_HOME: home } },
+    {
+      encoding: "utf8",
+      env: { ...process.env, CXTALK_HOME: home, CLAUDE_CODE_SESSION_ID: sessionOf(args) },
+    },
   );
   return { out: r.stdout ?? "", err: r.stderr ?? "", code: r.status ?? -1 };
 };
@@ -138,6 +161,7 @@ const stopHook = (input: string, as: string): Run => {
     env: {
       ...process.env,
       CXTALK_HOME: home,
+      CLAUDE_CODE_SESSION_ID: sessionFor(as),
       PATH: `${BIN_DIR}${delimiter}${process.env.PATH ?? ""}`,
     },
   });
@@ -1688,6 +1712,107 @@ describe("状態ファイルの値", () => {
   });
 });
 
+// Stop hook は全セッションのターン終了で走る。会話していないセッションが
+// 実装を読み込まずに引き返せるよう、控えの有無だけで判定できるようにする。
+describe("会話しているセッションを控える", () => {
+  const awake = (as: string): string => join(home, "awake", sessionFor(as));
+  const namesIn = (as: string): string[] =>
+    readFileSync(awake(as), "utf8").split("\n").filter((line) => line !== "");
+
+  test("open が控える", () => {
+    j("open", "--topic", TOPIC, "--as", "alpha");
+    assert.deepEqual(namesIn("alpha"), ["alpha"]);
+  });
+
+  test("join が控える", () => {
+    j("join", j("open", "--topic", TOPIC, "--as", "alpha").room_id!, "--as", "beta");
+    assert.deepEqual(namesIn("beta"), ["beta"]);
+  });
+
+  // 再開すると id が変わる。会話の途中で控えを失っても、次の往復で戻る。
+  test("say と receive でも控える", () => {
+    const room = opened();
+    rmSync(awake("alpha"), { force: true });
+    say(room, "alpha", "最初の論点です", true);
+    assert.deepEqual(namesIn("alpha"), ["alpha"]);
+    rmSync(awake("beta"), { force: true });
+    j("receive", room, "--timeout", "1", "--as", "beta");
+    assert.deepEqual(namesIn("beta"), ["beta"]);
+  });
+
+  test("同じ名乗りを二度控えない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    assert.deepEqual(namesIn("alpha"), ["alpha"]);
+  });
+
+  test("会話していないセッションには控えが無い", () => {
+    opened();
+    assert.equal(existsSync(awake("carol")), false);
+  });
+
+  // 参加者が 1 人でも残っていれば、相手はこれから発言しうる。
+  test("開いているうちは控えを消さない", () => {
+    opened();
+    run("check", "--as", "alpha");
+    assert.equal(existsSync(awake("alpha")), true);
+  });
+
+  test("閉じていても未読があれば控えを消さない", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    run("check", "--as", "beta");
+    assert.equal(existsSync(awake("beta")), true);
+  });
+
+  test("閉じて読み終えたら控えを消す", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    j("join", room, "--as", "beta");
+    run("check", "--as", "beta");
+    assert.equal(existsSync(awake("beta")), false);
+  });
+
+  // 一部しか見ていない呼び出しで控えを捨てると、見なかったルームの用を落とす。
+  test("--room を付けた check は控えを消さない", () => {
+    const seen = opened();
+    const unseen = opened();
+    say(unseen, "alpha", "最初の論点です", true);
+    run("check", "--as", "beta", "--room", seen);
+    assert.equal(existsSync(awake("beta")), true);
+  });
+
+  // 名乗りは会話ごとに選べる。--as が無いときに 1 つしか見ないと取りこぼす。
+  test("--as が無ければ控えた名乗りを全部見る", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    j("join", room, "--as", "beta");
+    say(room, "alpha", "最初の論点です", true);
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", CLI, "check"], {
+      encoding: "utf8",
+      env: { ...process.env, CXTALK_HOME: home, CLAUDE_CODE_SESSION_ID: sessionFor("beta") },
+    });
+    assert.equal(r.status, 0);
+    assert.match(r.stdout ?? "", new RegExp(room));
+  });
+
+  test("控えが無ければ作業ディレクトリの名前を名乗る", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    rmSync(awake("beta"), { force: true });
+    const cwd = join(home, "beta");
+    mkdirSync(cwd, { recursive: true });
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", CLI, "check"], {
+      encoding: "utf8",
+      cwd,
+      env: { ...process.env, CXTALK_HOME: home, CLAUDE_CODE_SESSION_ID: sessionFor("beta") },
+    });
+    assert.equal(r.status, 0);
+    assert.match(r.stdout ?? "", new RegExp(room));
+  });
+});
+
 describe("check の表示", () => {
   const closedWithUnread = (): string => {
     const room = opened();
@@ -2477,5 +2602,30 @@ describe("Stop hook", () => {
     unreadForBeta();
     const input = JSON.stringify({ stop_hook_active: false, nested: { stop_hook_active: true } });
     assert.equal(stopHook(input, "beta").code, 2);
+  });
+
+  // 控えが無いセッションは実装を読み込まずに引き返す。全セッションで走るため、
+  // ここを通すと会話していないセッションが毎ターン起動の費用を払う。
+  test("控えが無ければ実装を起動しない", () => {
+    unreadForBeta();
+    rmSync(join(home, "awake", sessionFor("beta")), { force: true });
+    assert.equal(stopHook(active(false), "beta").code, 0);
+  });
+
+  test("セッションが分からなければ止めない", () => {
+    unreadForBeta();
+    const cwd = join(home, "beta");
+    mkdirSync(cwd, { recursive: true });
+    const r = viaBash([HOOK], {
+      input: active(false),
+      cwd,
+      env: {
+        ...process.env,
+        CXTALK_HOME: home,
+        CLAUDE_CODE_SESSION_ID: "",
+        PATH: `${BIN_DIR}${delimiter}${process.env.PATH ?? ""}`,
+      },
+    });
+    assert.equal(r.code, 0);
   });
 });

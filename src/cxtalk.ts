@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { randomBytes } from "node:crypto";
@@ -76,6 +84,47 @@ const messagesDir = (id: string): string => join(roomDir(id), "messages");
 
 /** 人間が原文へ辿り着くための場所。要約を経ずに突き合わせられるようにする。 */
 const logPath = (id: string): string => resolve(roomDir(id));
+
+/**
+ * 会話しているセッションを控える場所。Stop hook は全セッションのターン終了で走るため、
+ * 起こす必要のないセッションが実装を読み込む前に引き返せるようにする。
+ * 鍵はセッションで、置き場も名乗りも hook 側で解決させない。
+ */
+const awakeDir = (): string => join(homeDir(), "awake");
+
+/** 区切りも点も受けない。控える先が置き場の外を指すより、控えを持たないほうへ倒す。 */
+const sessionId = (): string | null => {
+  const id = process.env.CLAUDE_CODE_SESSION_ID;
+  return id !== undefined && /^[A-Za-z0-9_-]+$/.test(id) ? id : null;
+};
+
+const awakePath = (): string | null => {
+  const id = sessionId();
+  return id === null ? null : join(awakeDir(), id);
+};
+
+/** 控えた名乗り。同じ名乗りが二度書かれていても 1 つとして読む。 */
+const awakeNames = (): string[] => {
+  const path = awakePath();
+  if (path === null || !existsSync(path)) return [];
+  return [...new Set(readFileSync(path, "utf8").split("\n").filter((line) => line !== ""))];
+};
+
+/**
+ * 参加を控える。追記だけで済ませるのは、同じセッションから同時に呼ばれても
+ * 控えを取りこぼさないためである。取りこぼすと起こされなくなり、外から気づけない。
+ */
+const rememberAwake = (as: string): void => {
+  const path = awakePath();
+  if (path === null || awakeNames().includes(as)) return;
+  writing(awakeDir(), () => mkdirSync(awakeDir(), { recursive: true }));
+  writing(path, () => appendFileSync(path, `${as}\n`, "utf8"));
+};
+
+const forgetAwake = (): void => {
+  const path = awakePath();
+  if (path !== null && existsSync(path)) writing(path, () => rmSync(path));
+};
 
 const pad = (n: number): string => String(n).padStart(2, "0");
 
@@ -785,6 +834,7 @@ const cmdOpen = (flags: Flags): void => {
   const id = newRoomId();
   writing(messagesDir(id), () => mkdirSync(messagesDir(id), { recursive: true }));
   writeRoom(newRoom(id, topic, as, maxHops));
+  rememberAwake(as);
   emit({
     ok: true,
     room_id: id,
@@ -845,6 +895,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   // 一度も発言していない名前が残る。履歴は足さずとも返せる。
   const participant = participantOf(room, as) ?? newParticipant();
   if (!rejoined && room.status === "open") room.participants[as] = participant;
+  rememberAwake(as);
   const { messages, latest: seq } = drainUnread(room, participant, as);
   if (room.status === "open") room.last_activity_at = nowIso();
   writeRoom(room);
@@ -889,6 +940,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     notAParticipant(id, as, room);
     return;
   }
+  rememberAwake(as);
   if (room.status === "closed") {
     const { messages } = drainUnread(room, participant, as);
     const kept = keepRefused(id, as, flags.text);
@@ -1091,6 +1143,7 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     notAParticipant(id, as, opening);
     return;
   }
+  rememberAwake(as);
   const timeout = positiveInt(flags.timeout, DEFAULT_TIMEOUT_SECONDS);
   if (timeout === null) {
     invalidArgument("--timeout には 1 以上の整数を指定してください。", id);
@@ -1385,8 +1438,11 @@ const cmdCheck = (flags: Flags): void => {
       return;
     }
   }
-  const as = selfName(flags);
-  if (!isValidName(as)) {
+  // 名乗りは会話ごとに選べるため、セッションに 1 つとは限らない。控えたものを全部見る。
+  const remembered = awakeNames();
+  const names =
+    flags.as === undefined && remembered.length > 0 ? remembered : [selfName(flags)];
+  if (names.some((name) => !isValidName(name))) {
     process.exitCode = 2;
     return;
   }
@@ -1395,6 +1451,7 @@ const cmdCheck = (flags: Flags): void => {
     const dir = roomsDir();
     const ids = existsSync(dir) ? readdirSync(dir) : [];
     const lines: string[] = [];
+    let awake = false;
     for (const id of ids) {
       if (only !== undefined && id !== only) continue;
       const room = safeReadRoom(id);
@@ -1402,20 +1459,28 @@ const cmdCheck = (flags: Flags): void => {
       // 参加していないルームは掃除しない。これは全セッションのターン終了で走るため、
       // 参加者より先に掃除を通すと、無関係なセッションが他人の状態を書き換える。
       // 閉じる判断は ls / status / receive でも行われるので、先回りする必要がない。
-      const participant = participantOf(room, as);
-      if (!participant) continue;
+      const mine = names.filter((name) => participantOf(room, name) !== undefined);
+      if (mine.length === 0) continue;
       sweepIdle(room);
       const seq = latestSeq(id);
-      if (turnOf(room, seq) !== as) continue;
-      const files = unreadFiles(id, participant.last_read, as);
-      if (files.length === 0) continue;
-      const from = senderOfFile(files[files.length - 1]);
-      // 閉じたルームに残りの往復はない。中断を判断する材料として読まれるため、
-      // 続けられる会話と同じ表示にしない。
-      const remaining =
-        room.status === "closed" ? "閉じています" : `残り${hopsLeftOf(room, seq)}往復`;
-      lines.push(`${id}: ${from} から ${files.length} 件（${remaining}）— ${room.topic}`);
+      for (const name of mine) {
+        const participant = participantOf(room, name);
+        if (!participant) continue;
+        const files = unreadFiles(id, participant.last_read, name);
+        // 開いているルームには相手が発言しうる。閉じていても未読があれば渡す先が残る。
+        // どちらも無くなって初めて、このセッションを起こす理由が消える。
+        if (room.status === "open" || files.length > 0) awake = true;
+        if (turnOf(room, seq) !== name || files.length === 0) continue;
+        const from = senderOfFile(files[files.length - 1]);
+        // 閉じたルームに残りの往復はない。中断を判断する材料として読まれるため、
+        // 続けられる会話と同じ表示にしない。
+        const remaining =
+          room.status === "closed" ? "閉じています" : `残り${hopsLeftOf(room, seq)}往復`;
+        lines.push(`${id}: ${from} から ${files.length} 件（${remaining}）— ${room.topic}`);
+      }
     }
+    // 一部しか見ていない呼び出しで控えを捨てると、見なかったルームの用を落とす。
+    if (!awake && only === undefined) forgetAwake();
     if (lines.length === 0) {
       process.exitCode = 1;
       return;
