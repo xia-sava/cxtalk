@@ -50,6 +50,8 @@ const DEFAULT_TIMEOUT_SECONDS = 100;
 const RETRY_LIMIT = 9;
 const IDLE_MINUTES = 30;
 const POLL_INTERVAL_MS = 200;
+/** 空を読んだときに読み直す回数。連続で書き続けている相手でも、この回数でほぼ吸収できる。 */
+const EMPTY_READ_RETRIES = 5;
 const MAX_PARTICIPANTS = 2;
 const NAME_MAX_LENGTH = 64;
 
@@ -276,6 +278,22 @@ const countOf = (value: unknown, label: string): number => {
 };
 
 /**
+ * 書いている最中の読みを吸収する。書き込みは長さ 0 に切り詰めてから書くため、
+ * その最中の読みは空になる。空の状態ファイルは正当な状態として存在しないため、
+ * 空を読んだことは壊れている証拠ではなく、書いている最中に当たった証拠である。
+ *
+ * 待ちは挟まない。読みそのものが切り詰めの窓より長く、読み直すだけで越える。
+ * 読み直しても空なら、切り詰めではなく壊れているとして扱う。
+ */
+const readRoomText = (path: string): string => {
+  let text = readFileSync(path, "utf8");
+  for (let left = EMPTY_READ_RETRIES; text === "" && left > 0; left -= 1) {
+    text = readFileSync(path, "utf8");
+  }
+  return text;
+};
+
+/**
  * 状態ファイルを読む。人間が書き換える手順を案内している以上、使える形かをここで確かめる。
  *
  * 欠けていて安全な既定があるものは寄せ、無いものと解釈できない値は断る。
@@ -285,7 +303,7 @@ const countOf = (value: unknown, label: string): number => {
 const readRoom = (id: string): Room | null => {
   const path = roomJsonPath(id);
   if (!existsSync(path)) return null;
-  const room = JSON.parse(readFileSync(path, "utf8")) as Room;
+  const room = JSON.parse(readRoomText(path)) as Room;
   if (room.id !== id) {
     throw invalidState("id がディレクトリ名と一致しません。");
   }

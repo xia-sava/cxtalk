@@ -1591,6 +1591,13 @@ describe("壊れた room.json", () => {
     assert.equal(r.code, 0);
   });
 
+  // 書いている最中の読みは空になる。読み直しても空なら、切り詰めではなく壊れている。
+  test("空のままなら読み取れないとして返す", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    writeFileSync(roomStatePath(room), "", "utf8");
+    assert.equal(j("status", room, "--as", "alpha").error, "corrupt_room");
+  });
+
   test("ls は読めないルームを挙げる", () => {
     const room = broken();
     assert.deepEqual(j("ls").unreadable, [room]);
