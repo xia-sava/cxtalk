@@ -1917,7 +1917,14 @@ describe("hook が届いた記録", () => {
   test("記録が無ければ open が伝える", () => {
     const r = j("open", "--topic", TOPIC, "--as", "alpha");
     assert.equal(r.hook_last_run, null);
-    assert.match(r.hint!, /走った記録はありません/);
+    assert.match(r.hint!, /走った記録はまだありません/);
+  });
+
+  // 会話を始めるまで hook は実装を起動しない。最初の open では必ず記録が無いため、
+  // そこで効いていないと告げると、初めて使う人には常に空振りする警告が出る。
+  test("記録が無くても効いていないとは言わない", () => {
+    const hint = j("open", "--topic", TOPIC, "--as", "alpha").hint!;
+    assert.doesNotMatch(hint, /効いていない/);
   });
 
   // 手で叩いた分を混ぜると、届いていない hook が届いたように見える。
@@ -1959,7 +1966,7 @@ describe("hook が届いた記録", () => {
     writeFileSync(record(), "2020-01-01T00:00:00+09:00\n", "utf8");
     const hint = j("open", "--topic", TOPIC, "--as", "alpha").hint!;
     assert.match(hint, /2020-01-01/);
-    assert.doesNotMatch(hint, /記録はありません/);
+    assert.doesNotMatch(hint, /記録はまだありません/);
   });
 });
 
