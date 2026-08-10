@@ -555,13 +555,25 @@ const hopsOf = (seq: number): number => Math.ceil(seq / 2);
 const REFUSED_PREFIX = "closed-";
 
 /**
+ * 空いている名前を探す。同じ番号で断られるのは一度とは限らず、
+ * 同じ名前へ書くと先に救った本文が消える。残すために救っているので、上書きでは用をなさない。
+ */
+const refusedFile = (id: string, from: string): string => {
+  const base = `${REFUSED_PREFIX}${numbered(latestSeq(id) + 1)}-${from}`;
+  for (let nth = 1; ; nth += 1) {
+    const file = nth === 1 ? `${base}.md` : `${base}-${nth}.md`;
+    if (!existsSync(join(messagesDir(id), file))) return file;
+  }
+};
+
+/**
  * 断った本文を残す。閉じるのは時計が下した判断であり、書き上げた仕事まで消す理由にはならない。
  * 書いている相手はこのツールから見えないため、閉じる側は必ずこの取り違えをしうる。
  * 発言ではないので申告は持たない。数えなかったものとして ignored の窓から人間に届く。
  */
 const keepRefused = (id: string, from: string, text: string | undefined): string | null => {
   if (text === undefined) return null;
-  const file = `${REFUSED_PREFIX}${numbered(latestSeq(id) + 1)}-${from}.md`;
+  const file = refusedFile(id, from);
   const path = join(messagesDir(id), file);
   writing(path, () =>
     writeFileSync(path, `${HEAD_OPEN}${nowIso()}${HEAD_CLOSE}${text}\n`, "utf8"),

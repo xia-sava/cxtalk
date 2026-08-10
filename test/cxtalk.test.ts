@@ -1402,6 +1402,29 @@ describe("断った本文を残す", () => {
     const r = j("say", room, "--advanced", "true", "--as", "beta");
     assert.equal(r.kept, null);
   });
+
+  // 残すために救っている。同じ名前へ書くと、先に救った本文が消える。
+  test("二度目は別の名前で残す", () => {
+    const { room } = refused();
+    assert.equal(say(room, "beta", "書き直した本文", true).kept, "closed-0002-beta-2.md");
+    assert.equal(say(room, "beta", "三度目の本文", true).kept, "closed-0002-beta-3.md");
+  });
+
+  test("先に残した本文は消えない", () => {
+    const { room } = refused();
+    say(room, "beta", "書き直した本文", true);
+    const first = readFileSync(messagePath(room, "closed-0002-beta.md"), "utf8");
+    assert.match(first, /書き上げた本文/);
+  });
+
+  test("二度目も発言として数えない", () => {
+    const { room } = refused();
+    say(room, "beta", "書き直した本文", true);
+    assert.deepEqual(j("status", room, "--as", "alpha").ignored, [
+      "closed-0002-beta-2.md",
+      "closed-0002-beta.md",
+    ]);
+  });
 });
 
 describe("時間切れの数え直し", () => {
