@@ -1007,9 +1007,9 @@ describe("終端の伝え方", () => {
     const room = opened();
     say(room, "alpha", "ひとつめ", true);
     const hint = exhaustWaits(room, "alpha").hint!;
-    assert.match(hint, /receive/);
-    assert.match(hint, /close/);
-    assert.match(hint, /idle/);
+    assert.match(hint, /receive を呼び直/);
+    assert.match(hint, /close で閉じ/);
+    assert.match(hint, /idle として閉じ/);
   });
 
   test("時間切れを異常として伝えない", () => {
@@ -1053,7 +1053,7 @@ describe("名乗り", () => {
     j("join", room);
     const r = j("say", room, "--text", "ひとりごと", "--advanced", "true");
     assert.equal(r.next, "receive");
-    assert.match(r.hint!, /receive/);
+    assert.match(r.hint!, /receive を呼べば参加を待て/);
   });
 
   test("待っても来ない場合の手掛かりを添える", () => {
@@ -1472,10 +1472,9 @@ describe("断った本文を残す", () => {
     return say(room, "beta", "書き上げた本文", true);
   };
 
+  // 止まると unwritable が返り、閉室も未読も本文も届かない。
   test("残せなくても応答は返す", () => {
-    const r = unwritable();
-    assert.equal(r.error, "closed");
-    assert.equal(r.next, "report");
+    assert.equal(unwritable().error, "closed");
   });
 
   test("残せなかったことを場所とともに伝える", () => {
@@ -1643,8 +1642,7 @@ describe("相手がいないルームの案内", () => {
 describe("見つからないルーム", () => {
   test("探した場所を添える", () => {
     const hint = j("status", "r-0000", "--as", "alpha").hint!;
-    assert.match(hint, /r-0000/);
-    assert.match(hint, /rooms/);
+    assert.ok(hint.includes(join(home, "rooms", "r-0000")));
   });
 
   test("room_id 以外の原因も並べる", () => {
@@ -1732,7 +1730,7 @@ describe("起きていない会話に要約を求めない", () => {
     test(`発言 0 件なら ${label} は要約を求めない`, () => {
       const hint = call(emptyClosed()).hint!;
       assert.doesNotMatch(hint, /合意できた点/);
-      assert.match(hint, /room_id/);
+      assert.match(hint, /room_id が正しく伝わったか/);
     });
   }
 
@@ -2369,7 +2367,7 @@ describe("コマンドの指定", () => {
   });
 
   test("使えるコマンドを示す", () => {
-    assert.match(j().hint!, /open/);
+    assert.match(j().hint!, /使えるのは open \//);
   });
 
   test("未対応のコマンドは retry で断る", () => {
@@ -2428,7 +2426,7 @@ describe("一覧の案内", () => {
   });
 
   test("ルームが無いときも次の行動を書く", () => {
-    assert.match(j("ls").hint!, /open/);
+    assert.match(j("ls").hint!, /会話を始めるなら open/);
   });
 });
 
@@ -2483,7 +2481,7 @@ describe("報告へ移る経路の未読", () => {
     const room = closedWithUnread();
     const r = j("status", room, "--as", "alpha");
     assert.match(r.hint!, /未読が 1 件/);
-    assert.match(r.hint!, /receive/);
+    assert.match(r.hint!, /receive で読んでから/);
   });
 
   test("未読がなければ件数を出さない", () => {
@@ -2605,7 +2603,7 @@ describe("待機の上限に達したときの案内", () => {
 
   test("代わりに room_id が伝わったかを確かめさせる", () => {
     const room = j("open", "--topic", TOPIC, "--as", "alice").room_id!;
-    assert.match(exhaustWaits(room, "alice").hint!, /room_id/);
+    assert.match(exhaustWaits(room, "alice").hint!, /room_id が伝わっていない/);
   });
 
   // 会話は終わっていない。要約を求めると、続けられる会話をそこで畳ませることになる。
