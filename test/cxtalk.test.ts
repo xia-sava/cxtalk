@@ -1520,6 +1520,40 @@ describe("相手がいないルームの案内", () => {
   });
 });
 
+// 同じ症状に原因が複数ある。1 つだけ名指しすると、正しい room_id を確かめた
+// 人間がそこで詰まる。窓ごとに別の名前で言うのも、別の直し方を指示することになる。
+describe("見つからないルーム", () => {
+  test("探した場所を添える", () => {
+    const hint = j("status", "r-0000", "--as", "alpha").hint!;
+    assert.match(hint, /r-0000/);
+    assert.match(hint, /rooms/);
+  });
+
+  test("room_id 以外の原因も並べる", () => {
+    const hint = j("status", "r-0000", "--as", "alpha").hint!;
+    assert.match(hint, /CXTALK_HOME/);
+    assert.match(hint, /消された/);
+  });
+
+  test("置き場ごと無ければ見つからないとして返す", () => {
+    assert.equal(j("status", "r-0000", "--as", "alpha").error, "no_such_room");
+  });
+
+  // ディレクトリだけ残っているのは、無いのではなく読めない。
+  test("置き場だけ残っていれば読み取れないとして返す", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    rmSync(roomStatePath(room));
+    assert.equal(j("status", room, "--as", "alpha").error, "corrupt_room");
+  });
+
+  test("ls と同じものを指す", () => {
+    const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
+    rmSync(roomStatePath(room));
+    assert.deepEqual(j("ls").unreadable, [room]);
+    assert.equal(j("status", room, "--as", "alpha").error, "corrupt_room");
+  });
+});
+
 describe("壊れた room.json", () => {
   const broken = (): string => {
     const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;

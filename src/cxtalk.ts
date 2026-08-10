@@ -703,13 +703,20 @@ const newRoomId = (): string => {
   }
 };
 
+/**
+ * 見つからない理由は 1 つに絞れない。room_id の取り違えだけを名指しすると、
+ * 正しい room_id を確かめた人間がそこで詰まる。候補を並べ、探した場所を添える。
+ */
 const notFound = (id: string): void => {
   emit({
     ok: false,
     error: "no_such_room",
     room_id: id,
     next: "ask_user",
-    hint: `ルーム ${id} が見つかりません。room_id をユーザーに確認してください。`,
+    hint:
+      `${resolve(roomDir(id))} にルーム ${id} がありません。` +
+      `room_id の取り違え、置き場の食い違い、ルームが消されたことが考えられます。` +
+      `CXTALK_HOME は両方のセッションで同じである必要があります。ユーザーに確認してください。`,
   });
 };
 
@@ -775,7 +782,10 @@ const corruptRoom = (id: string, reason: string): void => {
 const loadRoom = (id: string): Room | null => {
   try {
     const room = readRoom(id);
-    if (!room) notFound(id);
+    // 置き場だけが残っているのは、無いのではなく読めない。ls は unreadable に載せる。
+    // 窓ごとに別の名前で言うと、同じ状態に別の直し方を指示することになる。
+    if (!room && existsSync(roomDir(id))) corruptRoom(id, "room.json がありません。");
+    else if (!room) notFound(id);
     return room;
   } catch (error) {
     corruptRoom(id, reasonOf(error));
