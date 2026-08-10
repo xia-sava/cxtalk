@@ -259,6 +259,16 @@ describe("open", () => {
     const b = j("open", "--topic", TOPIC, "--as", "alpha");
     assert.notEqual(a.room_id, b.room_id);
   });
+
+  test("hint は名乗りが衝突する条件を自分の名前で示す", () => {
+    const r = j("open", "--topic", TOPIC, "--as", "alpha");
+    assert.match(r.hint!, /"alpha" だと名乗りが衝突/);
+  });
+
+  test("hint は衝突したときの対処として --as を挙げる", () => {
+    const r = j("open", "--topic", TOPIC, "--as", "alpha");
+    assert.match(r.hint!, /--as で別の名前/);
+  });
 });
 
 describe("join", () => {

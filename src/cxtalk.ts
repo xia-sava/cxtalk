@@ -895,9 +895,13 @@ const cmdOpen = (flags: Flags): void => {
     turn: as,
     hook_last_run: lastRun,
     next: "ask_user",
+    // 人間が手で運ぶのはこの文だけ。衝突したときの対処をここに置かないと、
+    // 気づける次の窓が no_response まで無い。
     hint:
       `ルームを開きました。ユーザーに『相手のセッションで cxtalk join ${id} を実行するよう伝えてください』と` +
       `依頼し、そのまま receive を呼んでください。相手が参加した時点で receive が返ります。` +
+      `ただし相手の作業ディレクトリ名が "${as}" だと名乗りが衝突して参加が成立しないため、` +
+      `その場合は join に --as で別の名前を付けるよう併せて伝えてください。` +
       hookRunNote(lastRun),
   });
 };
