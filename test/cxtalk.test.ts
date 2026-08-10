@@ -1933,6 +1933,14 @@ describe("hook が届いた記録", () => {
     assert.equal(existsSync(record()), false);
   });
 
+  // フラグは手でも渡せる。フラグの有無で数えると、手で叩いた分が記録に混ざり、
+  // その記録を hook が届いた証拠として読むことになる。
+  test("--hook true を手で渡しても記録しない", () => {
+    opened();
+    run("check", "--hook", "true", "--as", "alpha");
+    assert.equal(existsSync(record()), false);
+  });
+
   test("hook として走れば記録する", () => {
     opened();
     asHook(JSON.stringify({ stop_hook_active: false }));

@@ -1576,9 +1576,10 @@ const stopHookActive = (): boolean | null => {
  */
 const cmdCheck = (flags: Flags): void => {
   if (flags.hook === "true") {
-    // 手で叩いた分を混ぜない。混ぜると、届いていない hook が届いたように見える。
-    recordHookRun();
     const active = stopHookActive();
+    // hook が渡す入力を読めたときだけ記録する。フラグは手でも渡せるため、
+    // フラグの有無で数えると、手で叩いた分が hook の届いた記録に混ざる。
+    if (active !== null) recordHookRun();
     // 判断できないときは止めない側へ倒す。止め続けると会話から抜けられなくなる。
     if (active === null) {
       process.exitCode = 2;
