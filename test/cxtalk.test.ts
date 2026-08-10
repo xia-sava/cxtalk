@@ -518,13 +518,16 @@ describe("receive", () => {
     assert.match(last.hint!, /知らされていない可能性/);
   });
 
-  test("記録があれば候補に挙げない", () => {
+  // 記録はマシンに 1 つで、別のセッションが走らせたものでもある。走った記録があることは、
+  // 相手が起こされていることを意味しない。境目を持たず、時刻をそのまま渡す。
+  test("記録があっても候補から外さず時刻を添える", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
     writeFileSync(join(home, "last_check"), "2026-08-10T14:00:00+09:00\n", "utf8");
     const last = exhaustWaits(room, "alpha");
     assert.equal(last.hook_last_run, "2026-08-10T14:00:00+09:00");
-    assert.doesNotMatch(last.hint!, /知らされていない可能性/);
+    assert.match(last.hint!, /知らされていない可能性/);
+    assert.match(last.hint!, /2026-08-10T14:00:00\+09:00/);
   });
 
   // 待ち切ったときの案内は、実装が実際にすることと揃っている必要がある。
