@@ -121,6 +121,36 @@ const rememberAwake = (as: string): void => {
   writing(path, () => appendFileSync(path, `${as}\n`, "utf8"));
 };
 
+/**
+ * hook が実装まで届いたことを残す。届かない状態は外から観測できない。
+ * 呼び出しの成否も終了コードも hook の中で握られるため、届いた事実そのものを残す。
+ */
+const hookRunPath = (): string => join(homeDir(), "last_check");
+
+const recordHookRun = (): void => {
+  const path = hookRunPath();
+  writing(homeDir(), () => mkdirSync(homeDir(), { recursive: true }));
+  writing(path, () => writeFileSync(path, `${nowIso()}\n`, "utf8"));
+};
+
+/** 読めない記録は「記録が無い」として扱う。無いほうへ倒せば、人間に確かめてもらえる。 */
+const hookLastRun = (): string | null => {
+  const path = hookRunPath();
+  if (!existsSync(path)) return null;
+  const at = readFileSync(path, "utf8").trim();
+  return at === "" || Number.isNaN(new Date(at).getTime()) ? null : at;
+};
+
+/**
+ * 走った時刻をそのまま渡す。古いかどうかを決める境目をツールが持つと、
+ * 会話していない期間が長いだけの置き場を、壊れていると報告することになる。
+ */
+const hookRunNote = (at: string | null): string =>
+  at === null
+    ? "このマシンで Stop hook が走った記録はありません。" +
+      "相手を起こす仕組みが効いていない可能性があります。ユーザーに確かめてもらってください。"
+    : `Stop hook が最後に走ったのは ${at} です。`;
+
 const forgetAwake = (): void => {
   const path = awakePath();
   if (path !== null && existsSync(path)) writing(path, () => rmSync(path));
@@ -835,6 +865,7 @@ const cmdOpen = (flags: Flags): void => {
   writing(messagesDir(id), () => mkdirSync(messagesDir(id), { recursive: true }));
   writeRoom(newRoom(id, topic, as, maxHops));
   rememberAwake(as);
+  const lastRun = hookLastRun();
   emit({
     ok: true,
     room_id: id,
@@ -842,10 +873,12 @@ const cmdOpen = (flags: Flags): void => {
     topic,
     max_hops: maxHops,
     turn: as,
+    hook_last_run: lastRun,
     next: "ask_user",
     hint:
       `ルームを開きました。ユーザーに『相手のセッションで cxtalk join ${id} を実行するよう伝えてください』と` +
-      `依頼し、そのまま receive を呼んでください。相手が参加した時点で receive が返ります。`,
+      `依頼し、そのまま receive を呼んでください。相手が参加した時点で receive が返ります。` +
+      hookRunNote(lastRun),
   });
 };
 
@@ -1426,6 +1459,8 @@ const stopHookActive = (): boolean | null => {
  */
 const cmdCheck = (flags: Flags): void => {
   if (flags.hook === "true") {
+    // 手で叩いた分を混ぜない。混ぜると、届いていない hook が届いたように見える。
+    recordHookRun();
     const active = stopHookActive();
     // 判断できないときは止めない側へ倒す。止め続けると会話から抜けられなくなる。
     if (active === null) {

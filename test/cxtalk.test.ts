@@ -62,6 +62,7 @@ type Reply = {
   unknown_keys?: string[];
   participants?: string[];
   last_activity_at?: string;
+  hook_last_run?: string | null;
   log_path?: string;
   rooms?: {
     room_id: string;
@@ -1709,6 +1710,74 @@ describe("状態ファイルの値", () => {
       j("receive", room, "--timeout", "1", "--as", "alpha").retries_left,
       RETRY_LIMIT - 1,
     );
+  });
+});
+
+// hook が実装まで届いていない状態は、|| exit 0 に飲まれて外から観測できない。
+// 届いた事実を残し、会話を始めるときに人間へ渡す。
+describe("hook が届いた記録", () => {
+  const record = (): string => join(home, "last_check");
+  const asHook = (input: string): Run => {
+    const cwd = join(home, "beta");
+    mkdirSync(cwd, { recursive: true });
+    return viaBash([HOOK], {
+      input,
+      cwd,
+      env: {
+        ...process.env,
+        CXTALK_HOME: home,
+        CLAUDE_CODE_SESSION_ID: sessionFor("beta"),
+        PATH: `${BIN_DIR}${delimiter}${process.env.PATH ?? ""}`,
+      },
+    });
+  };
+
+  test("記録が無ければ open が伝える", () => {
+    const r = j("open", "--topic", TOPIC, "--as", "alpha");
+    assert.equal(r.hook_last_run, null);
+    assert.match(r.hint!, /走った記録はありません/);
+  });
+
+  // 手で叩いた分を混ぜると、届いていない hook が届いたように見える。
+  test("手で叩いた check は記録しない", () => {
+    run("check", "--as", "alpha");
+    assert.equal(existsSync(record()), false);
+  });
+
+  test("hook として走れば記録する", () => {
+    opened();
+    asHook(JSON.stringify({ stop_hook_active: false }));
+    assert.equal(existsSync(record()), true);
+  });
+
+  // 控えが無いセッションは実装に届かない。届いていないのだから記録も残らない。
+  test("控えが無いセッションでは記録しない", () => {
+    asHook(JSON.stringify({ stop_hook_active: false }));
+    assert.equal(existsSync(record()), false);
+  });
+
+  test("記録があれば open が時刻を渡す", () => {
+    writeFileSync(record(), "2026-08-10T14:00:00+09:00\n", "utf8");
+    const r = j("open", "--topic", TOPIC, "--as", "alpha");
+    assert.equal(r.hook_last_run, "2026-08-10T14:00:00+09:00");
+    assert.match(r.hint!, /2026-08-10T14:00:00/);
+  });
+
+  // 書いている最中の読みは空になる。壊れているほうではなく、無いほうへ倒す。
+  test("読めない記録は無いものとして扱う", () => {
+    writeFileSync(record(), "", "utf8");
+    assert.equal(j("open", "--topic", TOPIC, "--as", "alpha").hook_last_run, null);
+    writeFileSync(record(), "きのう\n", "utf8");
+    assert.equal(j("open", "--topic", TOPIC, "--as", "alpha").hook_last_run, null);
+  });
+
+  // 古いかどうかを決める境目を持つと、会話していない期間が長いだけの置き場を
+  // 壊れていると報告することになる。
+  test("古い記録でも壊れているとは言わない", () => {
+    writeFileSync(record(), "2020-01-01T00:00:00+09:00\n", "utf8");
+    const hint = j("open", "--topic", TOPIC, "--as", "alpha").hint!;
+    assert.match(hint, /2020-01-01/);
+    assert.doesNotMatch(hint, /記録はありません/);
   });
 });
 
