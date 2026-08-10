@@ -192,6 +192,9 @@ const exhaustWaits = (room: string, as: string): Reply => {
 
 const roomStatePath = (room: string): string => join(home, "rooms", room, "room.json");
 
+const messagePath = (room: string, file: string): string =>
+  join(home, "rooms", room, "messages", file);
+
 const roomState = (
   room: string,
 ): { status: string; closed_reason: string | null; last_activity_at: string } =>
@@ -2039,9 +2042,6 @@ describe("名乗りを取り違えたときの案内", () => {
 });
 
 describe("発言のファイルに残る申告", () => {
-  const messagePath = (room: string, file: string): string =>
-    join(home, "rooms", room, "messages", file);
-
   for (const advanced of [true, false]) {
     test(`advanced: ${advanced} がファイルに残り、読み戻せる`, () => {
       const room = opened();
@@ -2068,6 +2068,29 @@ describe("発言のファイルに残る申告", () => {
     const raw = readFileSync(path, "utf8");
     writeFileSync(path, raw.replace(/\nadvanced: (true|false)/, ""), "utf8");
     assert.equal(j("join", room, "--as", "beta").messages![0].advanced, null);
+  });
+});
+
+describe("壊れた発言のファイル", () => {
+  const withBody = (body: string): string => {
+    const room = opened();
+    say(room, "alpha", "本文", true);
+    writeFileSync(messagePath(room, "0001-alpha.md"), body, "utf8");
+    return room;
+  };
+
+  // 書いている最中の読みは空になる。読み直しても空なら、書いている最中ではなく壊れている。
+  test("空のままなら読み取れないとして返す", () => {
+    assert.equal(j("join", withBody(""), "--as", "beta").error, "corrupt_room");
+  });
+
+  test("ヘッダが無ければ読み取れないとして返す", () => {
+    assert.equal(j("join", withBody("本文だけ\n"), "--as", "beta").error, "corrupt_room");
+  });
+
+  test("読み取れない発言もファイル名を挙げる", () => {
+    const r = j("join", withBody(""), "--as", "beta");
+    assert.match(r.hint!, /0001-alpha\.md/);
   });
 });
 

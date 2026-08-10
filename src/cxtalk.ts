@@ -278,14 +278,15 @@ const countOf = (value: unknown, label: string): number => {
 };
 
 /**
- * 書いている最中の読みを吸収する。書き込みは長さ 0 に切り詰めてから書くため、
- * その最中の読みは空になる。空の状態ファイルは正当な状態として存在しないため、
- * 空を読んだことは壊れている証拠ではなく、書いている最中に当たった証拠である。
+ * 書いている最中の読みを吸収する。状態ファイルは長さ 0 に切り詰めてから書き、
+ * 発言のファイルは名前が読めるようになってから中身を書くため、その最中の読みは空になる。
+ * どちらも空は正当な形として存在しないため、空を読んだことは壊れている証拠ではなく、
+ * 書いている最中に当たった証拠である。
  *
- * 待ちは挟まない。読みそのものが切り詰めの窓より長く、読み直すだけで越える。
- * 読み直しても空なら、切り詰めではなく壊れているとして扱う。
+ * 待ちは挟まない。読みそのものが窓より長く、読み直すだけで越える。
+ * 読み直しても空なら、書いている最中ではなく壊れているとして扱う。
  */
-const readRoomText = (path: string): string => {
+const readIntact = (path: string): string => {
   let text = readFileSync(path, "utf8");
   for (let left = EMPTY_READ_RETRIES; text === "" && left > 0; left -= 1) {
     text = readFileSync(path, "utf8");
@@ -303,7 +304,7 @@ const readRoomText = (path: string): string => {
 const readRoom = (id: string): Room | null => {
   const path = roomJsonPath(id);
   if (!existsSync(path)) return null;
-  const room = JSON.parse(readRoomText(path)) as Room;
+  const room = JSON.parse(readIntact(path)) as Room;
   if (room.id !== id) {
     throw invalidState("id がディレクトリ名と一致しません。");
   }
@@ -501,7 +502,7 @@ const advancedOf = (raw: string | undefined): boolean | null =>
   raw === "true" ? true : raw === "false" ? false : null;
 
 const readMessage = (id: string, file: string): Message => {
-  const raw = readFileSync(join(messagesDir(id), file), "utf8");
+  const raw = readIntact(join(messagesDir(id), file));
   // 境目は最初の一つを取る。ヘッダが at で始まると決まっているため、
   // 本文が同じ行を含んでいても、ヘッダの終わりのほうが必ず先に来る。
   const headEnd = raw.indexOf(HEAD_CLOSE);
