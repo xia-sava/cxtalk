@@ -904,15 +904,17 @@ const closedReply = (
   as: string,
 ): Record<string, unknown> => {
   const { messages } = drainUnread(room, participant, as);
+  const ignored = ignoredFiles(room.id);
   return {
     ok: true,
     status: "closed",
     room_id: room.id,
     closed_reason: room.closed_reason,
     messages,
+    ignored,
     log_path: logPath(room.id),
     next: "report",
-    hint: closedHint(room.id, messages.length),
+    hint: closedHint(room.id, messages.length) + ignoredHint(ignored),
   };
 };
 
@@ -1052,6 +1054,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   if (room.status === "closed") {
     const { messages } = drainUnread(room, participant, as);
     const kept = keepRefused(id, as, flags.text);
+    const ignored = ignoredFiles(id);
     emit({
       ok: false,
       error: "closed",
@@ -1061,9 +1064,13 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       messages,
       kept: kept.file,
       kept_unwritable: kept.unwritable,
+      ignored,
       log_path: logPath(id),
       next: "report",
-      hint: closedHint(id, messages.length, "このルームは閉じています。") + keptHint(kept),
+      hint:
+        closedHint(id, messages.length, "このルームは閉じています。") +
+        keptHint(kept) +
+        ignoredHint(ignored),
     });
     return;
   }
@@ -1136,6 +1143,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
 
   if (reason) {
     closeRoom(room, reason);
+    const ignored = ignoredFiles(id);
     emit({
       ok: true,
       room_id: id,
@@ -1144,18 +1152,20 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       status: "closed",
       closed_reason: reason,
       messages: unread,
+      ignored,
       log_path: logPath(id),
       next: "report",
-      hint: closedHint(
-        id,
-        unread.length,
-        reason === "hop_limit"
-          ? "往復上限に達したのでルームを閉じました。この発言に相手は応答できません。"
-          : // どの発言がそう申告されたかを名指しする。連長からは戻せないため、
-            // 名指ししないと、言われた側は自分の最後の発言を疑うしかない。
-            `前に進む発言が続かなかったのでルームを閉じました` +
-            `（${seq - 1} 件目と ${seq} 件目が advanced: false）。`,
-      ),
+      hint:
+        closedHint(
+          id,
+          unread.length,
+          reason === "hop_limit"
+            ? "往復上限に達したのでルームを閉じました。この発言に相手は応答できません。"
+            : // どの発言がそう申告されたかを名指しする。連長からは戻せないため、
+              // 名指ししないと、言われた側は自分の最後の発言を疑うしかない。
+              `前に進む発言が続かなかったのでルームを閉じました` +
+              `（${seq - 1} 件目と ${seq} 件目が advanced: false）。`,
+        ) + ignoredHint(ignored),
     });
     return;
   }
@@ -1456,19 +1466,22 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   const alreadyClosed = room.status === "closed";
   closeRoom(room, reason);
   const { messages } = drainUnread(room, participant, as);
+  const ignored = ignoredFiles(id);
   emit({
     ok: true,
     room_id: id,
     closed_reason: room.closed_reason,
     hops_used: hopsOf(latestSeq(id)),
     messages,
+    ignored,
     log_path: logPath(id),
     next: "report",
-    hint: closedHint(
-      id,
-      messages.length,
-      alreadyClosed ? "このルームは既に閉じています。" : "ルームを閉じました。",
-    ),
+    hint:
+      closedHint(
+        id,
+        messages.length,
+        alreadyClosed ? "このルームは既に閉じています。" : "ルームを閉じました。",
+      ) + ignoredHint(ignored),
   });
 };
 

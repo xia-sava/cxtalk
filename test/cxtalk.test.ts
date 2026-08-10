@@ -2116,6 +2116,46 @@ describe("発言のファイルに残る申告", () => {
   });
 });
 
+// 救出された本文は数えなかったファイルとしてしか現れない。報告へ移る応答にこの窓が
+// 無いと、閉室を受け取った側からは最後まで見えない。
+describe("報告へ移る応答は数えなかったファイルも渡す", () => {
+  const withStray = (room: string): string => {
+    writeFileSync(messagePath(room, "メモ.md"), "覚え書き\n", "utf8");
+    return room;
+  };
+
+  test("receive の閉室に載る", () => {
+    const room = withStray(opened());
+    j("close", room, "--as", "beta");
+    assert.deepEqual(j("receive", room, "--timeout", "1", "--as", "alpha").ignored, ["メモ.md"]);
+  });
+
+  test("close の応答に載る", () => {
+    const room = withStray(opened());
+    assert.deepEqual(j("close", room, "--as", "alpha").ignored, ["メモ.md"]);
+  });
+
+  test("往復上限で閉じた say の応答に載る", () => {
+    const room = withStray(opened(1));
+    say(room, "alpha", "最初の論点です", true);
+    const r = say(room, "beta", "読まずに応答します", true);
+    assert.equal(r.closed_reason, "hop_limit");
+    assert.deepEqual(r.ignored, ["メモ.md"]);
+  });
+
+  test("閉じたルームへの say の応答に載る", () => {
+    const room = withStray(opened());
+    j("close", room, "--as", "alpha");
+    const r = say(room, "beta", "書き上げた本文", true);
+    assert.deepEqual(r.ignored, ["closed-0001-beta.md", "メモ.md"]);
+  });
+
+  test("hint でも数えなかったことを伝える", () => {
+    const room = withStray(opened());
+    assert.match(j("close", room, "--as", "alpha").hint!, /数えなかったファイル/);
+  });
+});
+
 // 添字への代入は __proto__ を own にしない。落ちると、参加したのに参加者にならない。
 describe("継承したプロパティ名を代入で落とさない", () => {
   const joined = (): string => {
