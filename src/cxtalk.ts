@@ -833,30 +833,41 @@ const reasonOf = (error: unknown): string => {
   return "room.json を読み取れません。";
 };
 
-const corruptRoom = (id: string, reason: string): void => {
+/**
+ * 読めないルームへの発言は、状態を直しても同じ呼び出しでは通らない。
+ * 閉じたルームと同じだけ本文の行方を知らせる。救うものがあれば rescue で渡す。
+ */
+const corruptRoom = (id: string, reason: string, rescue?: () => Kept): void => {
+  const kept = rescue?.() ?? { file: null, unwritable: null };
   emit({
     ok: false,
     error: "corrupt_room",
     room_id: id,
     log_path: logPath(id),
+    kept: kept.file,
+    kept_unwritable: kept.unwritable,
     next: "ask_user",
     hint:
       `ルーム ${id} の状態を読み取れません。${reason}` +
-      `${logPath(id)} をユーザーに確認してもらってください。`,
+      `${logPath(id)} をユーザーに確認してもらってください。` +
+      keptHint(kept),
   });
 };
 
-/** ルームを読む。読めなければ理由に応じた応答を返して null を返す。 */
-const loadRoom = (id: string): Room | null => {
+/**
+ * ルームを読む。読めなければ理由に応じた応答を返して null を返す。
+ * 無いルームでは救わない。room_id を直せば同じ本文がそのまま通る。
+ */
+const loadRoom = (id: string, rescue?: () => Kept): Room | null => {
   try {
     const room = readRoom(id);
     // 置き場だけが残っているのは、無いのではなく読めない。ls は unreadable に載せる。
     // 窓ごとに別の名前で言うと、同じ状態に別の直し方を指示することになる。
-    if (!room && existsSync(roomDir(id))) corruptRoom(id, "room.json がありません。");
+    if (!room && existsSync(roomDir(id))) corruptRoom(id, "room.json がありません。", rescue);
     else if (!room) notFound(id);
     return room;
   } catch (error) {
-    corruptRoom(id, reasonOf(error));
+    corruptRoom(id, reasonOf(error), rescue);
     return null;
   }
 };
@@ -1059,7 +1070,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
   if (rejectInvalidName(as)) return;
-  const room = loadRoom(id);
+  const room = loadRoom(id, () => keepRefused(id, as, flags.text));
   if (!room) return;
   // 掃除を通さない。say は会話が続いている証拠であり、
   // 書き上げるのにかかった時間そのものを理由に、その発言を断ることになる。

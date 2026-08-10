@@ -1493,6 +1493,17 @@ describe("断った本文を残す", () => {
     assert.equal(r.kept, null);
   });
 
+  // 読めないルームへの発言も、状態を直すまで同じ呼び出しでは通らない。
+  // 閉じたルームだけが本文の行方を書くと、同じだけ失われる側が案内を持たない。
+  test("読めないルームでも断った本文を残す", () => {
+    const room = opened();
+    writeFileSync(roomStatePath(room), "{ 壊れた", "utf8");
+    const r = say(room, "beta", "書き上げた本文", true);
+    assert.equal(r.error, "corrupt_room");
+    assert.equal(r.kept, "closed-0001-beta.md");
+    assert.match(r.hint!, /closed-0001-beta\.md/);
+  });
+
   // 止めると、既読にした相手の最終見解が応答にも載らず、ファイルにも残らない。
   const unwritable = (): Reply => {
     const room = opened();
