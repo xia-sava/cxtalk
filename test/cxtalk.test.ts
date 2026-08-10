@@ -849,6 +849,56 @@ describe("生ログへの導線", () => {
   });
 });
 
+// 溜まるほど呼びにくくなる一覧は、壊れているルームを見る唯一の窓でもある。
+// 絞れるようにして、絞っても窓は閉じない形にする。
+describe("一覧の絞り込み", () => {
+  const twoRooms = (): { open: string; closed: string } => {
+    const open = opened();
+    const closed = opened();
+    j("close", closed, "--as", "alpha");
+    return { open, closed };
+  };
+
+  const idsOf = (r: Reply): string[] => r.rooms!.map((each) => each.room_id).sort();
+
+  test("--open true は開いているルームだけを返す", () => {
+    const { open } = twoRooms();
+    assert.deepEqual(idsOf(j("ls", "--open", "true")), [open]);
+  });
+
+  test("--open false は閉じているルームだけを返す", () => {
+    const { closed } = twoRooms();
+    assert.deepEqual(idsOf(j("ls", "--open", "false")), [closed]);
+  });
+
+  test("省略すれば両方返す", () => {
+    const { open, closed } = twoRooms();
+    assert.deepEqual(idsOf(j("ls")), [open, closed].sort());
+  });
+
+  // 量が増えるほど絞り込みが要るが、絞り込みで窓が閉じては元も子もない。
+  test("読み取れないルームは絞り込みの対象外", () => {
+    const { open } = twoRooms();
+    const broken = opened();
+    rmSync(roomStatePath(broken));
+    for (const scope of ["true", "false"]) {
+      assert.deepEqual(j("ls", "--open", scope).unreadable, [broken]);
+    }
+    assert.deepEqual(idsOf(j("ls", "--open", "true")), [open]);
+  });
+
+  test("絞ったことを hint でも伝える", () => {
+    twoRooms();
+    assert.match(j("ls", "--open", "true").hint!, /開いている/);
+  });
+
+  test("解釈できない値は断る", () => {
+    const r = j("ls", "--open", "yes");
+    assert.equal(r.ok, false);
+    assert.equal(r.next, "retry");
+  });
+});
+
 describe("閉じたルームの未読", () => {
   /** 上限に達すると最後の発言は相手にとって未読のまま残る。 */
   const exhausted = (): string => {

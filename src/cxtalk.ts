@@ -71,7 +71,7 @@ const KNOWN_FLAGS: Record<string, readonly string[]> = {
   receive: ["timeout", "as"],
   status: ["as"],
   close: ["reason", "as"],
-  ls: [],
+  ls: ["open"],
   check: ["as", "room", "hook"],
 };
 
@@ -1492,7 +1492,12 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   });
 };
 
-const cmdLs = (): void => {
+const cmdLs = (flags: Flags): void => {
+  const wanted = flags.open;
+  if (wanted !== undefined && wanted !== "true" && wanted !== "false") {
+    invalidArgument(`--open には true か false を指定してください。${wanted} は解釈できません。`);
+    return;
+  }
   const dir = roomsDir();
   const ids = existsSync(dir) ? readdirSync(dir) : [];
   const rooms: Record<string, unknown>[] = [];
@@ -1506,6 +1511,9 @@ const cmdLs = (): void => {
       continue;
     }
     sweepIdle(room);
+    // 掃除を通してから絞る。絞ってから掃除すると、閉じるべきルームが
+    // 開いているものだけを求めた呼び出しから漏れ続ける。
+    if (wanted !== undefined && (room.status === "open") !== (wanted === "true")) continue;
     const seq = latestSeq(room.id);
     rooms.push({
       room_id: room.id,
@@ -1520,10 +1528,13 @@ const cmdLs = (): void => {
       last_activity_at: room.last_activity_at,
     });
   }
+  // 絞ったことを言わずに件数だけ返すと、絞り込みを付けた側は全部を見たと読む。
+  const scope = wanted === undefined ? "" : wanted === "true" ? "開いている" : "閉じている";
   const guide =
     rooms.length === 0
-      ? "ルームはありません。会話を始めるなら open を、参加するなら room_id をユーザーに確認してください。"
-      : `${rooms.length} 件のルームがあります。どのルームの話かをユーザーに確認してください。` +
+      ? `${scope}ルームはありません。` +
+        `会話を始めるなら open を、参加するなら room_id をユーザーに確認してください。`
+      : `${scope}ルームが ${rooms.length} 件あります。どのルームの話かをユーザーに確認してください。` +
         `未読があるルームは join で続きを読めます。原文は log_root の下の room_id と` +
         `同じ名前のディレクトリにあります。`;
   emit({
@@ -1734,7 +1745,7 @@ try {
         cmdClose(positional, flags);
         break;
       case "ls":
-        cmdLs();
+        cmdLs(flags);
         break;
       case "check":
         cmdCheck(flags);

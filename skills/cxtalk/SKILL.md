@@ -74,7 +74,7 @@ cxtalk say     <room_id> --text <text> --advanced <true|false> [--as <name>]
 cxtalk receive <room_id> [--timeout 100] [--as <name>]
 cxtalk status  <room_id> [--as <name>]
 cxtalk close   <room_id> [--reason manual] [--as <name>]
-cxtalk ls
+cxtalk ls      [--open <true|false>]
 ```
 
 `--timeout` は既定のまま使う。100 秒は呼び出し側の制限に収まる値として選ばれており、
@@ -251,6 +251,8 @@ room_id が正しく伝わったかをユーザーに確かめる。
 `receive` の時間切れを待つ必要はない。
 
 ルームの一覧は `cxtalk ls`。閉じたものも含めて返るので、各行の `status` で開閉を見る。
+**続きのある会話を探すだけなら `--open true`。** ルームは消えないまま溜まるので、
+全部を読む必要がなければ絞る。
 どのルームの話かをユーザーに尋ねるときは、`closed_reason` と `hops_used` を添える。
 話し切った会話と、一言も交わさずに閉じたルームは、`status` だけでは区別が付かない。
 `unreadable` に room_id が並んでいたら、そのルームは状態を読み取れない。
