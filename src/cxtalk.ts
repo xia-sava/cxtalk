@@ -654,12 +654,19 @@ const sayHint = (room: Room, seq: number, head: string): string =>
   isFinalTurn(room, seq) ? `${head}${FINAL_TURN_NOTE}` : head;
 
 /**
+ * 閉室を伝える応答の次の行動。発言が 1 件も無ければ要約するものが無く、
+ * 確かめてほしいのは room_id が伝わったかである。要約を促しながら要約するなと書くと、
+ * 受け取った側は next と hint のどちらかを捨てることになる。
+ */
+const closedNext = (id: string): Next => (latestSeq(id) === 0 ? "ask_user" : "report");
+
+/**
  * 状態から次の行動を決める。相手がいないルームでは say が断られるため示さない。
  * 同じ状態を説明する join と status で共有する。
  */
 const nextOf = (room: Room, as: string, seq: number): Next =>
   room.status === "closed"
-    ? "report"
+    ? closedNext(room.id)
     : bothJoined(room) && turnOf(room, seq) === as
       ? "say"
       : "receive";
@@ -913,7 +920,7 @@ const closedReply = (
     messages,
     ignored,
     log_path: logPath(room.id),
-    next: "report",
+    next: closedNext(room.id),
     hint: closedHint(room.id, messages.length) + ignoredHint(ignored),
   };
 };
@@ -1066,7 +1073,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
       kept_unwritable: kept.unwritable,
       ignored,
       log_path: logPath(id),
-      next: "report",
+      next: closedNext(id),
       hint:
         closedHint(id, messages.length, "このルームは閉じています。") +
         keptHint(kept) +
@@ -1311,8 +1318,8 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
       room_id: id,
       closed_reason: room.closed_reason,
       log_path: logPath(id),
-      next: "report",
       // 相手が一度も参加していなければ発言も無い。起きていない会話に要約を求めない。
+      next: closedNext(id),
       hint:
         "待機の上限に達したためルームを閉じました。相手はまだ参加しておらず、発言もありません。" +
         `要約するものはないので、ユーザーに確かめてください。${ALONE_NOTE}`,
@@ -1475,7 +1482,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     messages,
     ignored,
     log_path: logPath(id),
-    next: "report",
+    next: closedNext(id),
     hint:
       closedHint(
         id,

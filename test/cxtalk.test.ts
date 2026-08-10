@@ -377,8 +377,9 @@ describe("say", () => {
 
   test("閉じたルームには発言できない", () => {
     const room = opened();
+    say(room, "alpha", "最初の論点です", true);
     j("close", room, "--as", "alpha");
-    const r = say(room, "alpha", "まだ話したい", true);
+    const r = say(room, "beta", "まだ話したい", true);
     assert.equal(r.ok, false);
     assert.equal(r.next, "report");
   });
@@ -553,7 +554,8 @@ describe("receive", () => {
     const last = exhaustWaits(room, "alpha");
     assert.equal(last.status, "closed");
     assert.equal(last.closed_reason, "no_response");
-    assert.equal(last.next, "report");
+    // 相手が来ていないので発言も無い。要約するものが無いなら要約を促さない。
+    assert.equal(last.next, "ask_user");
   });
 
   test("相手が閉じていれば報告を促す", () => {
@@ -2113,6 +2115,38 @@ describe("発言のファイルに残る申告", () => {
     const raw = readFileSync(path, "utf8");
     writeFileSync(path, raw.replace(/\nadvanced: (true|false)/, ""), "utf8");
     assert.equal(j("join", room, "--as", "beta").messages![0].advanced, null);
+  });
+});
+
+// 要約を促しながら要約するなと書くと、受け取った側は next と hint のどちらかを捨てる。
+describe("発言が無い閉室は報告を促さない", () => {
+  const closedWithout = (): string => {
+    const room = opened();
+    j("close", room, "--as", "alpha");
+    return room;
+  };
+
+  for (const [label, call] of [
+    ["join", (room: string) => j("join", room, "--as", "carol")],
+    ["status", (room: string) => j("status", room, "--as", "alpha")],
+    ["close", (room: string) => j("close", room, "--as", "alpha")],
+    ["receive", (room: string) => j("receive", room, "--timeout", "1", "--as", "alpha")],
+    ["say", (room: string) => say(room, "alpha", "まだ話したい", true)],
+  ] as const) {
+    test(`${label} は ask_user を返す`, () => {
+      assert.equal(call(closedWithout()).next, "ask_user");
+    });
+  }
+
+  test("発言が 1 件でもあれば報告を促す", () => {
+    const room = opened();
+    say(room, "alpha", "最初の論点です", true);
+    j("close", room, "--as", "alpha");
+    assert.equal(j("status", room, "--as", "alpha").next, "report");
+  });
+
+  test("要約するものが無いことを hint でも伝える", () => {
+    assert.match(j("status", closedWithout(), "--as", "alpha").hint!, /要約するものはない/);
   });
 });
 
