@@ -2570,7 +2570,15 @@ describe("参加していない名前への案内", () => {
 
   test("room_id の取り違えに触れる", () => {
     const r = j("say", oneParticipant(), "--text", "x", "--advanced", "true", "--as", "carol");
-    assert.match(r.hint!, /room_id/);
+    assert.match(r.hint!, /room_id を取り違えている/);
+  });
+
+  // 2 人埋まっていても room_id の取り違えは起こる。埋まっていることだけを告げると、
+  // 名乗りを直すほうだけを試して行き止まりになる。
+  test("2 人揃っていても room_id の取り違えに触れる", () => {
+    const r = j("say", opened(), "--text", "x", "--advanced", "true", "--as", "carol");
+    assert.match(r.hint!, /room_id を取り違えている/);
+    assert.match(r.hint!, /--as/);
   });
 });
 
