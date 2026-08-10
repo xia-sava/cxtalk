@@ -2076,6 +2076,31 @@ describe("会話しているセッションを控える", () => {
     assert.equal(existsSync(awake("beta")), true);
   });
 
+  // 読めないルームは参加者も読めない。用が無いことを確かめられないまま控えを捨てると、
+  // 読めるようになっても、そのセッションは起こされる側に戻らない。
+  test("読めないルームだけがあるとき控えを消さない", () => {
+    const room = opened();
+    writeFileSync(roomStatePath(room), "{ 壊れた", "utf8");
+    run("check", "--as", "beta");
+    assert.equal(existsSync(awake("beta")), true);
+  });
+
+  // 控えは名乗りも兼ねる。失うと --as を渡さない hook からは参加者として見つからず、
+  // ルームを直しても、そのセッションだけが会話に戻れない。
+  test("読めないルームが読めるようになれば起こす", () => {
+    const room = opened();
+    const state = readFileSync(roomStatePath(room), "utf8");
+    writeFileSync(roomStatePath(room), "{ 壊れた", "utf8");
+    run("check", "--as", "beta");
+    writeFileSync(roomStatePath(room), state, "utf8");
+    say(room, "alpha", "最初の論点です", true);
+    const r = spawnSync(process.execPath, ["--disable-warning=ExperimentalWarning", CLI, "check"], {
+      encoding: "utf8",
+      env: { ...process.env, CXTALK_HOME: home, CLAUDE_CODE_SESSION_ID: sessionFor("beta") },
+    });
+    assert.equal(r.status, 0);
+  });
+
   // 名乗りは会話ごとに選べる。--as が無いときに 1 つしか見ないと取りこぼす。
   test("--as が無ければ控えた名乗りを全部見る", () => {
     const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;

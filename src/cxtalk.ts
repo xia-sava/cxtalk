@@ -1611,10 +1611,14 @@ const cmdCheck = (flags: Flags): void => {
     const ids = existsSync(dir) ? readdirSync(dir) : [];
     const lines: string[] = [];
     let awake = false;
+    let unreadable = false;
     for (const id of ids) {
       if (only !== undefined && id !== only) continue;
       const room = safeReadRoom(id);
-      if (!room) continue;
+      if (!room) {
+        unreadable = true;
+        continue;
+      }
       // 参加していないルームは掃除しない。これは全セッションのターン終了で走るため、
       // 参加者より先に掃除を通すと、無関係なセッションが他人の状態を書き換える。
       // 閉じる判断は ls / status / receive でも行われるので、先回りする必要がない。
@@ -1638,8 +1642,10 @@ const cmdCheck = (flags: Flags): void => {
         lines.push(`${id}: ${from} から ${files.length} 件（${remaining}）— ${room.topic}`);
       }
     }
-    // 一部しか見ていない呼び出しで控えを捨てると、見なかったルームの用を落とす。
-    if (!awake && only === undefined) forgetAwake();
+    // 見ていないルームを残したまま控えを捨てると、そこにあった用を落とす。
+    // 読めないルームは参加者も読めないため、自分の用が無いことを確かめられない。
+    // 控えは名乗りも兼ねる。捨てると、ルームが読めるようになっても会話に戻れない。
+    if (!awake && !unreadable && only === undefined) forgetAwake();
     if (lines.length === 0) {
       process.exitCode = 1;
       return;
