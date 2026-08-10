@@ -1258,12 +1258,19 @@ describe("アイドルの掃除", () => {
     assert.equal(roomState(room).closed_reason, "idle");
   });
 
-  // 掃除を走らせるのは当事者とは限らない。check は参加者を見る前に掃除を通し、
-  // Stop hook として全セッションのターン終了で走るため、これが主要な閉じ手になる。
-  test("参加していないセッションの check が掃除する", () => {
+  // check は全セッションのターン終了で走る。参加していないルームまで掃除すると、
+  // 無関係なセッションが他人の状態を書き換える。
+  test("参加していないセッションの check は掃除しない", () => {
     const room = opened();
     makeStale(room);
     assert.equal(run("check", "--as", "carol").code, 1);
+    assert.equal(roomState(room).closed_reason, null);
+  });
+
+  test("参加しているセッションの check は掃除する", () => {
+    const room = opened();
+    makeStale(room);
+    assert.equal(run("check", "--as", "alpha").code, 1);
     assert.equal(roomState(room).closed_reason, "idle");
   });
 });
@@ -1286,12 +1293,12 @@ describe("掃除は行為を断らない", () => {
     assert.equal(j("status", room, "--as", "alpha").hops_used, 1);
   });
 
-  // 第三者が先に閉じていれば結果は同じになる。これだけでは足りないことを固定する。
+  // 相手が先に閉じていれば結果は同じになる。これだけでは足りないことを固定する。
   test("先に閉じられていれば断られる", () => {
     const room = opened();
     say(room, "alpha", "最初の論点です", true);
     makeStale(room);
-    run("check", "--as", "carol");
+    run("check", "--as", "alpha");
     assert.equal(say(room, "beta", "31 分かけて書いた本文", true).ok, false);
   });
 });
@@ -1505,7 +1512,7 @@ describe("起きていない会話に要約を求めない", () => {
   const emptyClosed = (): string => {
     const room = j("open", "--topic", TOPIC, "--as", "alpha").room_id!;
     makeStale(room);
-    run("check", "--as", "carol");
+    run("check", "--as", "alpha");
     return room;
   };
 

@@ -1399,9 +1399,12 @@ const cmdCheck = (flags: Flags): void => {
       if (only !== undefined && id !== only) continue;
       const room = safeReadRoom(id);
       if (!room) continue;
-      sweepIdle(room);
+      // 参加していないルームは掃除しない。これは全セッションのターン終了で走るため、
+      // 参加者より先に掃除を通すと、無関係なセッションが他人の状態を書き換える。
+      // 閉じる判断は ls / status / receive でも行われるので、先回りする必要がない。
       const participant = participantOf(room, as);
       if (!participant) continue;
+      sweepIdle(room);
       const seq = latestSeq(id);
       if (turnOf(room, seq) !== as) continue;
       const files = unreadFiles(id, participant.last_read, as);
