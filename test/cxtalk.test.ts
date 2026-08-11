@@ -66,7 +66,6 @@ type Reply = {
   hook_last_run?: string | null;
   log_path?: string;
   log_root?: string;
-  silent_seconds?: number;
   rooms?: {
     room_id: string;
     log_path?: string;
