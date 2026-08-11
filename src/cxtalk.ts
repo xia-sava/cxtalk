@@ -90,7 +90,7 @@ const logPath = (id: string): string => resolve(roomDir(id));
 /**
  * 会話しているセッションを控える場所。Stop hook は全セッションのターン終了で走るため、
  * 起こす必要のないセッションが実装を読み込む前に引き返せるようにする。
- * 鍵はセッションで、置き場も名乗りも hook 側で解決させない。
+ * 鍵はセッションとする。作業ディレクトリでは同じ場所で動く 2 つを区別できない。
  */
 const awakeDir = (): string => join(homeDir(), "awake");
 
@@ -909,10 +909,7 @@ const drainUnread = (
   return { messages, latest };
 };
 
-/**
- * 発言が 1 件も無ければ会話は起きていない。起きていない会話に要約を求めない。
- * 閉じ方は一つではないため、閉室を説明するすべての hint がここを通る。
- */
+/** 発言が 1 件も無ければ会話は起きていない。起きていない会話に要約を求めない。 */
 const nothingToSummarize = (id: string, head: string): string | null =>
   latestSeq(id) === 0
     ? `${head}発言は 1 件もありません。要約するものはないので、` +
@@ -1637,7 +1634,6 @@ const cmdCheck = (flags: Flags): void => {
       }
       // 参加していないルームは掃除しない。これは全セッションのターン終了で走るため、
       // 参加者より先に掃除を通すと、無関係なセッションが他人の状態を書き換える。
-      // 閉じる判断は ls / status / receive でも行われるので、先回りする必要がない。
       const mine = names.filter((name) => participantOf(room, name) !== undefined);
       if (mine.length === 0) continue;
       sweepIdle(room);
@@ -1679,8 +1675,7 @@ const cmdCheck = (flags: Flags): void => {
  * 入口で受けて、どの経路から投げても約束の側を保つ。
  */
 const failed = (thrown: unknown): void => {
-  // check は自身の中でも受けている。ここへ来るのは引数の解釈で投げた場合だけで、
-  // 終了コードで答える設計に合わせ、JSON を足さず安全側の 2 に倒す。
+  // check は終了コードで答えるため、JSON を足さず安全側の 2 に倒す。
   if (command === "check") {
     process.exitCode = 2;
     return;
