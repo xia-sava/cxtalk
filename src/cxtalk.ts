@@ -723,13 +723,14 @@ const isValidName = (name: string): boolean =>
   ![...name].some(isControl);
 
 /** 名前が使えなければ理由を返して true。呼び出し側はそこで中断する。 */
-const rejectInvalidName = (name: string): boolean => {
+const rejectInvalidName = (name: string, id?: string): boolean => {
   if (isValidName(name)) return false;
   const shown = name.length > 32 ? `${name.slice(0, 32)}…` : name;
   invalidArgument(
     `参加者名 "${shown}" は使えません。1 文字以上 ${NAME_MAX_LENGTH} 文字以内で、` +
       `数字だけの名前、. と ..、ファイル名に使えない文字、制御文字を避けてください。` +
       `--as で別の名前を指定してください。`,
+    id,
   );
   return true;
 };
@@ -1008,7 +1009,7 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
-  if (rejectInvalidName(as)) return;
+  if (rejectInvalidName(as, id)) return;
   const room = loadRoom(id);
   if (!room) return;
   // 掃除を通さない。join は参加している証拠であり、それを過去の無音を理由に断ると、
@@ -1069,7 +1070,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
-  if (rejectInvalidName(as)) return;
+  if (rejectInvalidName(as, id)) return;
   const room = loadRoom(id, () => keepRefused(id, as, flags.text));
   if (!room) return;
   // 掃除を通さない。say は会話が続いている証拠であり、
@@ -1274,8 +1275,6 @@ const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
 };
 
 const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => {
-  const as = selfName(flags);
-  if (rejectInvalidName(as)) return;
   if (positional.length > 1) {
     emit({
       ok: false,
@@ -1288,6 +1287,8 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
   }
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
+  const as = selfName(flags);
+  if (rejectInvalidName(as, id)) return;
   const opening = loadRoom(id);
   if (!opening) return;
   if (participantOf(opening, as) === undefined) {
@@ -1434,7 +1435,7 @@ const cmdStatus = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
-  if (rejectInvalidName(as)) return;
+  if (rejectInvalidName(as, id)) return;
   const room = loadRoom(id);
   if (!room) return;
   const seq = latestSeq(id);
@@ -1475,7 +1476,7 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
-  if (rejectInvalidName(as)) return;
+  if (rejectInvalidName(as, id)) return;
   const room = loadRoom(id);
   if (!room) return;
   const participant = participantOf(room, as);

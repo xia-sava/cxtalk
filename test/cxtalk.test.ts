@@ -1242,6 +1242,20 @@ describe("参加者名の検証", () => {
     assert.equal(j("open", "--topic", TOPIC, "--as", "backend").ok, true);
   });
 
+  // どのルームの応答かを応答だけで判別できるようにする。open はまだルームを持たない。
+  for (const [label, args] of [
+    ["join", []],
+    ["status", []],
+    ["close", []],
+    ["say", ["--text", "x", "--advanced", "true"]],
+    ["receive", ["--timeout", "1"]],
+  ] as const) {
+    test(`${label} は名前を断るときも room_id を載せる`, () => {
+      const room = opened();
+      assert.equal(j(label, room, ...args, "--as", "123").room_id, room);
+    });
+  }
+
   test("status も使えない名前を断る", () => {
     const room = opened();
     const r = j("status", room, "--as", "../escape");
