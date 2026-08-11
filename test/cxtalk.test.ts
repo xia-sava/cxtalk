@@ -2613,8 +2613,9 @@ describe("参加者が自分だけであることの案内", () => {
       "say",
       (room: string) => j("say", room, "--text", "x", "--advanced", "true", "--as", "alice"),
     ],
+    ["receive", (room: string) => j("receive", room, "--timeout", "1", "--as", "alice")],
   ] as const) {
-    test(`${label} は待つ前に参加者が 1 人だと告げる`, () => {
+    test(`${label} は待ち切る前に参加者が 1 人だと告げる`, () => {
       const hint = call(alone()).hint!;
       assert.match(hint, /1 人/);
       assert.match(hint, /--as/);

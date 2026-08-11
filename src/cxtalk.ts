@@ -1392,7 +1392,8 @@ const cmdReceive = async (positional: string[], flags: Flags): Promise<void> => 
     retries_left: retriesLeft,
     next: "receive",
     hint: awaitingJoin
-      ? `相手がまだ参加していません。receive を再度呼んでください。あと ${retriesLeft} 回待てます。`
+      ? `相手がまだ参加していません。receive を再度呼んでください。あと ${retriesLeft} 回待てます。` +
+        ALONE_NOTE
       : `まだ応答がありません。時間切れは異常ではなく、長文を書く相手では普通に起きます。` +
         `receive を再度呼んでください。あと ${retriesLeft} 回待てます。`,
   });
