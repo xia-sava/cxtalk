@@ -1386,11 +1386,19 @@ describe("アイドルの掃除", () => {
     assert.equal(roomState(room).closed_reason, "idle");
   });
 
-  // 一覧と状態は「壊れていることが伝わる窓」として呼ばせている。
-  // 覗く行為が他人の会話を閉じると、窓を覗けと言いながら閉じさせることになる。
+  // 参加していない名前からの呼び出しで他人の状態を書き換えない。
+  // 一覧と状態は「壊れていることが伝わる窓」として呼ばせているため、
+  // 覗く行為が閉じると、窓を覗けと言いながら閉じさせることになる。
+  // close は断る側の経路であり、断った呼び出しが閉じると応答と結果が食い違う。
   for (const [label, call] of [
     ["ls", () => j("ls")],
     ["status", (room: string) => j("status", room, "--as", "carol")],
+    ["close", (room: string) => j("close", room, "--as", "carol")],
+    [
+      "say",
+      (room: string) => j("say", room, "--text", "x", "--advanced", "true", "--as", "carol"),
+    ],
+    ["receive", (room: string) => j("receive", room, "--timeout", "1", "--as", "carol")],
   ] as const) {
     test(`${label} は他人のルームを閉じない`, () => {
       const room = opened();
@@ -1399,6 +1407,14 @@ describe("アイドルの掃除", () => {
       assert.equal(roomState(room).status, "open");
     });
   }
+
+  // 断る条件を通す前に掃除すると、retry を返しながらルームが閉じる。
+  test("解釈できない --reason では閉じない", () => {
+    const room = opened();
+    makeStale(room);
+    assert.equal(j("close", room, "--reason", "oops", "--as", "alpha").error, "invalid_argument");
+    assert.equal(roomState(room).status, "open");
+  });
 
   test("閉じるべき状態は無音の秒数として見える", () => {
     const room = opened();

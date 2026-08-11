@@ -1222,12 +1222,13 @@ const sleep = (ms: number): Promise<void> =>
 const pollOnce = (id: string, as: string): Record<string, unknown> | null => {
   const room = safeReadRoom(id);
   if (!room) return null;
-  sweepIdle(room);
   const participant = participantOf(room, as);
   // 入口で確かめた後に呼ばれる。それでも欠けていたときに黙って待つと、
   // 待機の上限まで進んだ末に、応答が無かったという記録だけが残る。
   if (!participant) return notAParticipantReply(id, as, room);
 
+  // 掃除は参加者を確かめた後に通す。断る相手の呼び出しで他人の状態を書き換えない。
+  sweepIdle(room);
   if (room.status === "closed") return closedReply(room, participant, as);
 
   const seen = participant.last_read;
@@ -1477,7 +1478,6 @@ const cmdClose = (positional: string[], flags: Flags): void => {
   if (rejectInvalidName(as)) return;
   const room = loadRoom(id);
   if (!room) return;
-  sweepIdle(room);
   const participant = participantOf(room, as);
   if (!participant) {
     notAParticipant(id, as, room);
@@ -1492,6 +1492,8 @@ const cmdClose = (positional: string[], flags: Flags): void => {
     );
     return;
   }
+  // 掃除は断る条件をすべて通してから走らせる。断った呼び出しで状態を書き換えない。
+  sweepIdle(room);
   const alreadyClosed = room.status === "closed";
   closeRoom(room, reason);
   const { messages } = drainUnread(room, participant, as);
