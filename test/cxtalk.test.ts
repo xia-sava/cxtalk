@@ -1485,6 +1485,52 @@ describe("掃除は行為を断らない", () => {
   });
 });
 
+// argv はシェルを通るため、本文のバッククォートが実行されて別の文字列が届くことがある。
+// ここで固定できるのは受け取り側だけで、シェルの側は呼び出し元にあり検証の外にある。
+describe("本文をファイルで渡す", () => {
+  const TEXT = "実装は `date +%Y` を見る。'引用' も混ざる。";
+
+  const textFile = (body: string): string => {
+    const path = join(home, "message.md");
+    writeFileSync(path, body, "utf8");
+    return path;
+  };
+
+  test("ファイルの本文がそのまま届く", () => {
+    const room = opened();
+    j("say", room, "--text-file", textFile(`${TEXT}\n`), "--advanced", "true", "--as", "alpha");
+    const r = j("receive", room, "--timeout", "1", "--as", "beta");
+    assert.equal(r.messages![0].text, TEXT);
+  });
+
+  // 片方を優先すると、渡したはずの本文が黙って捨てられる。
+  test("--text と同時には渡せない", () => {
+    const room = opened();
+    const r = j(
+      "say", room, "--text", "引数の本文", "--text-file", textFile("ファイルの本文\n"),
+      "--advanced", "true", "--as", "alpha",
+    );
+    assert.equal(r.error, "invalid_argument");
+    assert.equal(r.next, "retry");
+  });
+
+  test("読み取れないファイルはパスを名指しして断る", () => {
+    const room = opened();
+    const path = join(home, "missing.md");
+    const r = j("say", room, "--text-file", path, "--advanced", "true", "--as", "alpha");
+    assert.equal(r.error, "invalid_argument");
+    assert.equal(r.next, "retry");
+    assert.ok(r.hint!.includes(path));
+  });
+
+  test("どちらも渡さなければ断る", () => {
+    const room = opened();
+    const r = j("say", room, "--advanced", "true", "--as", "alpha");
+    assert.equal(r.error, "invalid_argument");
+    assert.equal(r.next, "retry");
+  });
+});
+
 describe("断った本文を残す", () => {
   const refused = (): { room: string; reply: Reply } => {
     const room = opened();
@@ -1501,6 +1547,24 @@ describe("断った本文を残す", () => {
     const path = join(home, "rooms", room, "messages", reply.kept!);
     assert.match(readFileSync(path, "utf8"), /書き上げた本文/);
   });
+
+  // 救う経路が本文の渡し方で分かれると、片方だけが書いた仕事を落とす。
+  // その呼び出しでは通らない断り方は 2 つあり、どちらも同じ値を見る。
+  for (const [label, refuse] of [
+    ["閉じたルーム", (room: string) => j("close", room, "--as", "alpha")],
+    ["読めないルーム", (room: string) => writeFileSync(roomStatePath(room), "{ 壊れた", "utf8")],
+  ] as const) {
+    test(`${label}でもファイルで渡した本文を残す`, () => {
+      const room = opened();
+      refuse(room);
+      const path = join(home, "message.md");
+      writeFileSync(path, "ファイルで書いた本文\n", "utf8");
+      const r = j("say", room, "--text-file", path, "--advanced", "true", "--as", "beta");
+      assert.equal(r.ok, false);
+      const kept = join(home, "rooms", room, "messages", r.kept!);
+      assert.match(readFileSync(kept, "utf8"), /ファイルで書いた本文/);
+    });
+  }
 
   test("残した本文は発言として数えない", () => {
     const { room } = refused();

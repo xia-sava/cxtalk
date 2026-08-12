@@ -67,7 +67,7 @@ const MAX_HOPS = Math.floor(MAX_SEQ / 2);
 const KNOWN_FLAGS: Record<string, readonly string[]> = {
   open: ["topic", "max-hops", "as"],
   join: ["as"],
-  say: ["text", "advanced", "as"],
+  say: ["text", "text-file", "advanced", "as"],
   receive: ["timeout", "as"],
   status: ["as"],
   close: ["reason", "as"],
@@ -1063,12 +1063,44 @@ const cmdJoin = (positional: string[], flags: Flags): void => {
   });
 };
 
+/**
+ * 発言の本文を取り出す。読めない指定はここで断り、断ったことを null で返す。
+ * argv はシェルを通るため、--text では本文のバッククォートが実行され、
+ * 別の文字列が黙って相手に届く。--text-file はその経路を持たない。
+ * 断った本文を残す経路も同じ値を見るので、ルームを読むより先に解決する。
+ */
+const textOf = (flags: Flags, id: string): { text: string | undefined } | null => {
+  const path = flags["text-file"];
+  if (path === undefined) return { text: flags.text };
+  if (flags.text !== undefined) {
+    invalidArgument(
+      "--text と --text-file は同時に指定できません。どちらか一方で本文を渡してください。",
+      id,
+    );
+    return null;
+  }
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    invalidArgument(
+      `--text-file に渡された ${path} を読み取れません。書き出したパスを確かめてください。`,
+      id,
+    );
+    return null;
+  }
+  // 末尾の改行は本文ではない。落とさないと --text と同じ内容が別の発言になる。
+  return { text: raw.endsWith("\n") ? raw.slice(0, -1) : raw };
+};
+
 const cmdSay = (positional: string[], flags: Flags): void => {
   const id = positional[0] ?? "";
   if (rejectMissingRoom(id)) return;
   const as = selfName(flags);
   if (rejectInvalidName(as, id)) return;
-  const room = loadRoom(id, () => keepRefused(id, as, flags.text));
+  const given = textOf(flags, id);
+  if (given === null) return;
+  const room = loadRoom(id, () => keepRefused(id, as, given.text));
   if (!room) return;
   // 掃除を通さない。say は会話が続いている証拠であり、
   // 書き上げるのにかかった時間そのものを理由に、その発言を断ることになる。
@@ -1082,7 +1114,7 @@ const cmdSay = (positional: string[], flags: Flags): void => {
   rememberAwake(as);
   if (room.status === "closed") {
     const { messages } = drainUnread(room, participant, as);
-    const kept = keepRefused(id, as, flags.text);
+    const kept = keepRefused(id, as, given.text);
     const ignored = ignoredFiles(id);
     emit({
       ok: false,
@@ -1117,10 +1149,10 @@ const cmdSay = (positional: string[], flags: Flags): void => {
     });
     return;
   }
-  const text = flags.text;
+  const text = given.text;
   const advanced = flags.advanced;
   if (text === undefined) {
-    invalidArgument("--text は必須です。発言の本文を渡してください。", id);
+    invalidArgument("本文が渡されていません。--text-file か --text で渡してください。", id);
     return;
   }
   if (advanced === undefined) {

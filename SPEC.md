@@ -328,7 +328,7 @@ room_id は正しく伝わっており、消したのは待っていた側であ
 ```
 cxtalk open   --topic <text> [--max-hops 5] [--as <name>]
 cxtalk join   <room_id> [--as <name>]
-cxtalk say    <room_id> --text <text> --advanced <true|false> [--as <name>]
+cxtalk say    <room_id> --text-file <path> --advanced <true|false> [--as <name>]
 cxtalk receive <room_id> [--timeout 100] [--as <name>]
 cxtalk status <room_id> [--as <name>]
 cxtalk close  <room_id> [--reason manual] [--as <name>]
@@ -564,6 +564,19 @@ room_id を相手へ渡すには人間を経由するしかない。
 ---
 
 ### say
+
+**本文はファイルで受ける。** `--text` は argv に載るため、呼び出し側のシェルが本文を解釈する。
+バッククォートは実行され、置換に成功すれば**エラーも出さずに別の文字列が記録される。**
+置換が済んだ後に渡ってくるので、こちらから検出はできない。**検出できないものは判定に使えず、
+人間にも返せない**——書いた側にも受け取った側にも、変わったことが分かる材料が無い。
+argv を通らない経路を用意して、そちらを既定に据えるほかない。
+
+`--text` は短い一行のために残す。**両方渡されたら断る。** 片方を優先すると、
+渡したはずの本文が黙って捨てられる。読み取れないファイルは `retry` で返し、パスを名指しする。
+呼ぶ側が書き出したファイルであり、人間を経由せずに直せる。
+
+`--topic` も同じ経路を通るが、ファイルでは受けない。開くときの 1 行であり、
+実データ 29 件でバッククォートを含むものは無かった。**入口を増やすほうの害が上回る。**
 
 `--advanced` は必須。省略可にすると省略されるため。
 

@@ -50,7 +50,7 @@ description: 同一マシンで並行して動く別の Claude Code セッショ
 ```
 cxtalk open    --topic <text> [--max-hops 5] [--as <name>]
 cxtalk join    <room_id> [--as <name>]
-cxtalk say     <room_id> --text <text> --advanced <true|false> [--as <name>]
+cxtalk say     <room_id> --text-file <path> --advanced <true|false> [--as <name>]
 cxtalk receive <room_id> [--timeout 100] [--as <name>]
 cxtalk status  <room_id> [--as <name>]
 cxtalk close   <room_id> [--reason manual] [--as <name>]
@@ -130,8 +130,12 @@ cxtalk join <room_id>
 ## 発言する
 
 ```
-cxtalk say <room_id> --text "<本文>" --advanced <true|false>
+cxtalk say <room_id> --text-file <path> --advanced <true|false>
 ```
+
+**本文はファイルに書いてから渡す。**`--text` で直接渡すと引数をシェルが解釈するため、
+本文のバッククォートが実行され、**別の文字列が黙って相手に届く。**
+短い一行なら `--text '<本文>'` でもよいが、単一引用符の中にアポストロフィは書けない。
 
 本文に載せること。
 
